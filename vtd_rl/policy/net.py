@@ -14,6 +14,7 @@ from vtd_rl.env.action import TURNS
 from vtd_rl.policy.encode import OBJ_DIM, VEC_DIM, flatten_obs, to_tensors
 
 NEG_BIG = -1.0e9          # 마스크된 자리를 최댓값 합치기에서 제외하는 값
+ENTROPY_MODES = ("gaussian", "squashed")
 
 
 def _tanh_log_det(raw):
@@ -36,6 +37,19 @@ class PolicyConfig:
     squash: bool = False            # True 면 tanh 로 행동을 상자 안에 가둔다(야코비안 보정 포함).
                                      # 기본값 False — 평균이 상자를 벗어나도 clamp 가 탐색을 먹던
                                      # 옛 동작을 그대로 유지해 M3·M4a·M4b 체크포인트가 그대로 읽힌다.
+    entropy_mode: str = "gaussian"  # squash=True 일 때 엔트로피 보너스를 어떻게 잴지.
+                                     #  "gaussian"  — 사전-스쿼시 Normal 의 닫힌형(탐색 보너스 대용).
+                                     #                기울기 정확·분산 0·M4a/M4b 와 계수 의미 동일.
+                                     #                단 포화를 벌하는 힘은 없다.
+                                     #  "squashed"  — evaluate_actions 안에서 **새 재매개화 표본**으로
+                                     #                -log p(tanh(u)) 를 추정한다. 야코비안이 살아 있어
+                                     #                포화를 실제로 벌한다. 분산이 있고 계수 의미가 다르다.
+                                     # squash=False 면 이 값과 무관하게 언제나 가우시안 닫힌형이다.
+
+    def __post_init__(self):
+        if self.entropy_mode not in ENTROPY_MODES:
+            raise ValueError(f"entropy_mode 는 {sorted(ENTROPY_MODES)} 중 하나여야 한다:"
+                             f" {self.entropy_mode!r}")
 
 
 class DrivePolicy(nn.Module):
@@ -80,6 +94,23 @@ class DrivePolicy(nn.Module):
         cat = torch.distributions.Categorical(logits=logits)
         return normal, cat
 
+    def _gauss_entropy(self, normal, generator=None):
+        """조향·가속 머리의 엔트로피 보너스 — `cfg.entropy_mode` 를 따른다.
+
+        스쿼시 분포에는 닫힌형 엔트로피가 없다. 그렇다고 **저장해 둔 표본**의 `-log_prob` 을
+        쓰면 안 된다 — PPO 는 그 표본을 detach 해 버퍼에 담으므로 재매개화 경로가 끊기고,
+        남는 기울기가 `∇θ H(π_old, π_θ)`, 즉 "방금 뽑은 행동에서 평균을 멀리 떼어놔라" 가
+        된다(실측: 60 반복에 |mean| 0.188 → 2.584, 계수를 10 배로 키워도 그대로).
+        그래서 두 갈래만 둔다 — 닫힌형(기울기 정확, 포화 무관심)이거나,
+        **여기서 새로 뽑은 재매개화 표본**(야코비안이 살아 포화를 벌한다)이거나.
+        """
+        if not self.cfg.squash or self.cfg.entropy_mode == "gaussian":
+            return normal.entropy().sum(dim=-1)
+        # "squashed": u = mean + std*ξ 로 기울기가 mean·std 로 흐른다(ξ 는 여기서 새로 뽑는다)
+        noise = torch.randn(normal.mean.shape, generator=generator).to(normal.mean.device)
+        u = normal.mean + noise * normal.stddev
+        return -(normal.log_prob(u).sum(dim=-1) - _tanh_log_det(u))
+
     def sample(self, vec, objs, mask, generator=None) -> dict:
         """PPO 용 표본 — **자르기 전** 원표본과 그 로그확률을 함께 준다.
 
@@ -92,25 +123,28 @@ class DrivePolicy(nn.Module):
         if self.cfg.squash:
             control = torch.tanh(raw)
             gauss_lp = normal.log_prob(raw).sum(dim=-1) - _tanh_log_det(raw)
-            gauss_ent = -gauss_lp          # 스쿼시 분포는 닫힌 엔트로피가 없다(표본 1개 추정)
         else:
             control = raw.clamp(-1.0, 1.0)
             gauss_lp = normal.log_prob(raw).sum(dim=-1)
-            gauss_ent = normal.entropy().sum(dim=-1)
+        gauss_ent = self._gauss_entropy(normal, generator=generator)
         log_prob = gauss_lp + cat.log_prob(turn)
         entropy = gauss_ent + cat.entropy()
         return {"raw": raw, "control": control, "turn": turn,
                 "log_prob": log_prob, "entropy": entropy, "value": None}
 
-    def evaluate_actions(self, vec, objs, mask, raw, turn):
-        """저장해 둔 원표본에 대한 현재 정책의 로그확률(PPO 비율 계산용)."""
+    def evaluate_actions(self, vec, objs, mask, raw, turn, generator=None):
+        """저장해 둔 원표본에 대한 현재 정책의 로그확률(PPO 비율 계산용).
+
+        엔트로피는 `raw` 를 쓰지 않는다 — `raw` 는 버퍼에서 온 detach 된 상수라
+        `-log p(raw)` 로 재면 기울기가 "평균을 그 표본에서 떼어놔라" 가 된다.
+        `_gauss_entropy()` 의 설명을 함께 볼 것(쌍둥이가 `sample()` 에 있다).
+        """
         normal, cat = self._dists(vec, objs, mask)
         if self.cfg.squash:
             gauss_lp = normal.log_prob(raw).sum(dim=-1) - _tanh_log_det(raw)
-            gauss_ent = -gauss_lp
         else:
             gauss_lp = normal.log_prob(raw).sum(dim=-1)
-            gauss_ent = normal.entropy().sum(dim=-1)
+        gauss_ent = self._gauss_entropy(normal, generator=generator)
         log_prob = gauss_lp + cat.log_prob(turn)
         entropy = gauss_ent + cat.entropy()
         return log_prob, entropy

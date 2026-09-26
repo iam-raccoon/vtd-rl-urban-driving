@@ -1,9 +1,10 @@
 import numpy as np
+import pytest
 import torch
 
 from vtd_rl.policy.dataset import DaggerDataset, Shard
 from vtd_rl.policy.encode import OBJ_DIM, OBJ_N, VEC_DIM
-from vtd_rl.policy.net import DrivePolicy, PolicyConfig
+from vtd_rl.policy.net import DrivePolicy, PolicyConfig, _tanh_log_det
 from vtd_rl.policy.train import TrainConfig, evaluate_labels, policy_loss, train_epochs
 
 
@@ -104,6 +105,99 @@ def test_스쿼시_모방손실은_선생님_행동을_atanh_로_옮긴다():
     with torch.no_grad():
         err = (torch.tanh(net(vec, objs, mask)[0]) - control).abs().mean()
     assert float(err) < 0.3
+
+
+class _FixedNet:
+    """`policy_loss` 가 보는 최소 인터페이스만 흉내낸다 — 평균을 직접 쥐고 흔들기 위해."""
+
+    def __init__(self, mean, log_std, logits):
+        self.mean, self.log_std, self.logits = mean, log_std, logits
+
+    def __call__(self, vec, objs, mask):
+        return self.mean, self.log_std, self.logits
+
+
+def _edge_batch():
+    """±1 가까운 라벨을 섞은 작은 배치 — atanh 유무로 최소점이 크게 갈린다."""
+    control = torch.tensor([[0.99, -0.99], [-0.98, 0.95], [0.5, -0.3], [0.0, 0.9]])
+    n = control.shape[0]
+    return (torch.zeros(n, VEC_DIM), torch.zeros(n, OBJ_N, OBJ_DIM), torch.zeros(n, OBJ_N),
+            control, torch.zeros(n, dtype=torch.long))
+
+
+def test_스쿼시_손실의_최소점은_atanh_라벨이다():
+    """atanh 를 빼면 최소점이 `mean=control` 로 옮겨간다 — 기울기 0 지점으로 잠근다."""
+    vec, objs, mask, control, turn = _edge_batch()
+    log_std = torch.zeros(2)
+    at = torch.atanh(control.clamp(-1.0 + 1e-6, 1.0 - 1e-6))
+
+    mean = at.clone().requires_grad_(True)
+    policy_loss(_FixedNet(mean, log_std, torch.zeros(len(turn), 3)),
+                (vec, objs, mask, control, turn), TrainConfig(squash=True))[0].backward()
+    assert torch.allclose(mean.grad, torch.zeros_like(mean), atol=1e-5)   # atanh 지점이 최소
+
+    mean2 = control.clone().requires_grad_(True)
+    policy_loss(_FixedNet(mean2, log_std, torch.zeros(len(turn), 3)),
+                (vec, objs, mask, control, turn), TrainConfig(squash=True))[0].backward()
+    assert mean2.grad.abs().max() > 0.3          # 라벨 지점은 최소가 아니다
+
+
+def test_스쿼시_모방손실은_행동의_음의로그가능도다():
+    """야코비안(`+ jac`)이 있어야 손실이 행동 `a` 에 대한 `-log p(a)` 가 된다.
+
+    빼면 `atanh(a)` 공간의 밀도라 비스쿼시 손실과 비교 자체가 범주 오류다.
+    값으로 잠근다 — 기울기에는 안 보이기 때문(선생님 라벨만의 함수라 파라미터 기울기 0).
+    """
+    torch.manual_seed(0)
+    net = DrivePolicy(PolicyConfig(trunk=(32, 32), squash=True))
+    batch = next(iter(toy_dataset(64).batches(32, generator=torch.Generator().manual_seed(0))))
+    vec, objs, mask, control, _turn = batch
+    _loss, parts = policy_loss(net, batch, TrainConfig(squash=True))
+    with torch.no_grad():
+        mean, log_std, _logits = net(vec, objs, mask)
+        squashed = torch.distributions.TransformedDistribution(
+            torch.distributions.Normal(mean, log_std.exp()),
+            torch.distributions.TanhTransform(cache_size=1))
+        ref = float(-squashed.log_prob(control.clamp(-1.0 + 1e-6, 1.0 - 1e-6))
+                    .sum(dim=-1).mean())
+        jac = float(_tanh_log_det(torch.atanh(control.clamp(-1.0 + 1e-6, 1.0 - 1e-6))).mean())
+    assert parts["control"] == pytest.approx(ref, rel=1e-5)
+    assert abs(jac) > 0.1                       # 빼면 이 만큼 어긋난다(무시할 수 없다)
+    assert parts["control"] != pytest.approx(ref - jac, rel=1e-3)
+
+
+def test_스쿼시면_control_mae는_tanh_평균으로_잰다():
+    """사전-스쿼시 평균을 행동공간 라벨과 비교하면 MAE 보고가 틀린다."""
+    torch.manual_seed(0)
+    net = DrivePolicy(PolicyConfig(trunk=(32, 32), squash=True))
+    with torch.no_grad():
+        net.mean.bias.copy_(torch.tensor([1.3, -1.0]))     # tanh 와 원값이 확실히 갈리게
+    ds = toy_dataset(64)
+    out = evaluate_labels(net, ds)
+    vec, objs, mask, control, _turn = next(iter(ds.batches(len(ds))))
+    with torch.no_grad():
+        mean = net(vec, objs, mask)[0]
+        want = float((torch.tanh(mean) - control).abs().mean())
+        raw = float((mean - control).abs().mean())
+    assert out["control_mae"] == pytest.approx(want, rel=1e-6)
+    assert out["control_mae"] != pytest.approx(raw, rel=1e-3)
+    # 정책이 스쿼시면 손실도 스쿼시로 — cfg 기본값(squash=False)에 조용히 어긋나지 않는다
+    assert out["control"] == pytest.approx(
+        policy_loss(net, (vec, objs, mask, control, _turn), TrainConfig(squash=True))[1]["control"],
+        rel=1e-6)
+
+
+def test_비스쿼시_control_mae는_그대로다():
+    torch.manual_seed(0)
+    net = DrivePolicy(PolicyConfig(trunk=(32, 32)))
+    with torch.no_grad():
+        net.mean.bias.copy_(torch.tensor([1.3, -1.0]))
+    ds = toy_dataset(64)
+    out = evaluate_labels(net, ds)
+    vec, objs, mask, control, _turn = next(iter(ds.batches(len(ds))))
+    with torch.no_grad():
+        mean = net(vec, objs, mask)[0]
+    assert out["control_mae"] == pytest.approx(float((mean - control).abs().mean()), rel=1e-6)
 
 
 def test_스쿼시_기본값은_꺼짐():

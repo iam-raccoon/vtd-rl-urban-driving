@@ -40,6 +40,23 @@ _IMITATION_TRAIN_CFG_DETACH = dataclasses.replace(_IMITATION_TRAIN_CFG, sigma_gr
 _IMITATION_CFGS = {"learn": _IMITATION_TRAIN_CFG, "detach": _IMITATION_TRAIN_CFG_DETACH}
 
 
+def imitation_train_cfg(net, cfg: PPOConfig) -> TrainConfig:
+    """모방 손실 설정 — σ 모드는 `cfg` 에서, 스쿼시 여부는 **정책에서** 가져온다.
+
+    `TrainConfig()` 의 `squash=False` 를 그대로 쓰면, 스쿼시 체크포인트를 `--init` 로 받아
+    `ActorCritic.from_policy` 가 `squash=True` 를 제대로 실어도 **모방만 조용히 비스쿼시로**
+    계산된다. 그러면 모방은 `mean -> control` 로 끄는데 환경은 `tanh(mean)` 을 받는다
+    (실측 어긋남 `|tanh(c)-c|` 평균 0.0428, 가속만 0.0813, 최대 0.2384).
+    """
+    try:
+        base = _IMITATION_CFGS[cfg.imitation_sigma]
+    except KeyError:
+        raise ValueError(f"imitation_sigma 는 {sorted(_IMITATION_CFGS)} 중 하나여야 한다:"
+                         f" {cfg.imitation_sigma!r}")
+    squash = bool(net.policy.cfg.squash)
+    return base if base.squash == squash else dataclasses.replace(base, squash=squash)
+
+
 def imitation_coef(step: int, cfg: PPOConfig) -> float:
     return cfg.imitation_coef0 * 0.5 ** (step / max(cfg.imitation_half_life, 1))
 
@@ -73,13 +90,9 @@ def imitation_loss(net, dagger_batch, cfg: PPOConfig):
     `net` 은 `ActorCritic`(가치 머리 포함)이지만, `policy_loss` 는 `DrivePolicy` 를
     직접 호출하므로(`net(vec, objs, mask) -> mean, log_std, logits`) 반드시 `net.policy` 를
     넘긴다. `cfg.imitation_sigma` 가 `"detach"` 면 σ 에는 기울기를 안 보낸다.
+    스쿼시 여부는 정책 설정을 따라간다(`imitation_train_cfg`).
     """
-    try:
-        train_cfg = _IMITATION_CFGS[cfg.imitation_sigma]
-    except KeyError:
-        raise ValueError(f"imitation_sigma 는 {sorted(_IMITATION_CFGS)} 중 하나여야 한다:"
-                         f" {cfg.imitation_sigma!r}")
-    return policy_loss(net.policy, dagger_batch, train_cfg)
+    return policy_loss(net.policy, dagger_batch, imitation_train_cfg(net, cfg))
 
 
 def dagger_batches(dataset, batch_size: int, generator=None, device=None):

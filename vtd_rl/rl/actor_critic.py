@@ -50,8 +50,9 @@ class ActorCritic(nn.Module):
         out["value"] = self.value(vec, objs, mask)
         return out
 
-    def evaluate_actions(self, vec, objs, mask, raw, turn):
-        log_prob, entropy = self.policy.evaluate_actions(vec, objs, mask, raw, turn)
+    def evaluate_actions(self, vec, objs, mask, raw, turn, generator=None):
+        log_prob, entropy = self.policy.evaluate_actions(vec, objs, mask, raw, turn,
+                                                         generator=generator)
         return log_prob, entropy, self.value(vec, objs, mask)
 
     def clamp_log_std(self):

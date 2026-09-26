@@ -3,6 +3,7 @@
 M4 의 PPO 가 같은 분포를 쓰므로 여기서도 평균제곱오차가 아니라 로그가능도로 배운다
 (표준편차까지 배워 두면 PPO 시작점이 자연스럽다).
 """
+import dataclasses
 import math
 import time
 from dataclasses import dataclass
@@ -80,13 +81,23 @@ def train_epochs(net, dataset, cfg: TrainConfig = TrainConfig(), device=None, lo
             "seconds": time.perf_counter() - t0}
 
 
+def squash_aligned(cfg: TrainConfig, net) -> TrainConfig:
+    """손실 설정의 `squash` 를 정책 설정에 맞춘다 — 조용한 어긋남을 막는다."""
+    want = bool(getattr(net, "cfg", None) is not None and net.cfg.squash)
+    return cfg if cfg.squash == want else dataclasses.replace(cfg, squash=want)
+
+
 @torch.no_grad()
 def evaluate_labels(net, dataset, device=None, cfg: TrainConfig = TrainConfig()) -> dict:
     device = device or net.device
     net.to(device).eval()
     vec, objs, mask, control, turn = next(iter(dataset.batches(len(dataset), device=device)))
     mean, log_std, logits = net(vec, objs, mask)
+    cfg = squash_aligned(cfg, net)
     loss, parts = policy_loss(net, (vec, objs, mask, control, turn), cfg)
+    # 선생님 라벨은 **행동공간** 값이다. 스쿼시 정책이 실제로 내보내는 행동은 tanh(mean) 이므로
+    # 사전-스쿼시 평균과 비교하면 MAE 보고가 틀린다.
+    pred = torch.tanh(mean) if cfg.squash else mean
     return {"loss": parts["total"], "control": parts["control"], "turn": parts["turn"],
-            "control_mae": float((mean - control).abs().mean().item()),
+            "control_mae": float((pred - control).abs().mean().item()),
             "turn_acc": float((logits.argmax(dim=-1) == turn).float().mean().item())}

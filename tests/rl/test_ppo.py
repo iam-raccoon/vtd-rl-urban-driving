@@ -223,3 +223,42 @@ def test_모방_시그마에_이상한_값을_주면_거부한다(small_ac):
     batch = next(iter(toy_dagger(64).batches(32, generator=torch.Generator().manual_seed(0))))
     with pytest.raises(ValueError):
         imitation_loss(net, batch, PPOConfig(imitation_sigma="아무거나"))
+
+
+def _squash_ac(squash=True):
+    from vtd_rl.policy.net import PolicyConfig
+    from vtd_rl.rl.actor_critic import ActorCritic, ActorCriticConfig
+    torch.manual_seed(0)
+    cfg = ActorCriticConfig(policy=PolicyConfig(obj_hidden=16, obj_out=16, trunk=(32, 32),
+                                                squash=squash),
+                            value_hidden=(32, 32), obj_hidden=16, obj_out=16)
+    return ActorCritic(cfg)
+
+
+def test_모방손실은_정책의_스쿼시를_따라간다():
+    """스쿼시 체크포인트를 `--init` 로 받아도 모방만 조용히 비스쿼시로 계산되면 안 된다.
+
+    그러면 모방이 `mean -> control` 로 끌고 환경은 `tanh(mean)` 을 받아 어긋난다
+    (실측 `|tanh(c)-c|` 평균 0.0428, 가속만 0.0813, 최대 0.2384).
+    """
+    from vtd_rl.policy.train import TrainConfig, policy_loss
+    net = _squash_ac(squash=True)
+    batch = next(iter(toy_dagger(64).batches(32, generator=torch.Generator().manual_seed(0))))
+    _loss, parts = imitation_loss(net, batch, PPOConfig())
+    _sref, sparts = policy_loss(net.policy, batch, TrainConfig(squash=True))
+    _nref, nparts = policy_loss(net.policy, batch, TrainConfig(squash=False))
+    assert parts["total"] == pytest.approx(sparts["total"], rel=1e-9)     # 스쿼시 손실과 등식
+    assert parts["total"] != pytest.approx(nparts["total"], rel=1e-3)     # 비스쿼시와는 다르다
+    # σ 모드와 함께 써도 유지된다
+    _l2, p2 = imitation_loss(net, batch, PPOConfig(imitation_sigma="detach"))
+    _r2, r2p = policy_loss(net.policy, batch, TrainConfig(squash=True, sigma_grad=False))
+    assert p2["total"] == pytest.approx(r2p["total"], rel=1e-9)
+
+
+def test_비스쿼시_정책의_모방손실은_예전과_같다():
+    from vtd_rl.policy.train import TrainConfig, policy_loss
+    net = _squash_ac(squash=False)
+    batch = next(iter(toy_dagger(64).batches(32, generator=torch.Generator().manual_seed(0))))
+    _loss, parts = imitation_loss(net, batch, PPOConfig())
+    _ref, rparts = policy_loss(net.policy, batch, TrainConfig())
+    assert parts["total"] == pytest.approx(rparts["total"], rel=1e-9)
