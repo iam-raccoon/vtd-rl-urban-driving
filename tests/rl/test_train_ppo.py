@@ -412,3 +412,91 @@ def test_smoke가_eval_every_0_을_가리지_않는다():
                 mod.main()
     finally:
         sys.argv = old_argv
+
+
+def test_entropy_mode_기본값은_None이라_체크포인트_값을_그대로_쓴다():
+    """`--entropy-mode` 를 안 주면 `a.entropy_mode` 가 `None` 이어야 한다(기존 동작 불변 —
+
+    체크포인트에 저장된 `PolicyConfig.entropy_mode` 를 그대로 쓴다).
+    """
+    module = _load_train_ppo_module()
+    a = module._build_parser().parse_args(["--out", "/tmp/불필요-존재안함"])
+    assert a.entropy_mode is None
+
+
+def test_entropy_mode는_choices_밖의_값을_거부한다():
+    """`ENTROPY_MODES` 에 없는 값은 argparse `choices` 로 막혀야 한다(학습이 시작되기 전에)."""
+    module = _load_train_ppo_module()
+    with pytest.raises(SystemExit):
+        module._build_parser().parse_args(
+            ["--out", "/tmp/불필요-존재안함", "--entropy-mode", "아무거나"])
+
+
+def test_entropy_mode_None이면_정책을_안_건드린다():
+    """`_apply_entropy_mode(net, None)` 은 `net` 을 그대로 돌려줘야 한다 — 체크포인트 값
+
+    (`gaussian`)이 그대로 남는다.
+    """
+    module = _load_train_ppo_module()
+    net = ActorCritic()
+    out = module._apply_entropy_mode(net, None)
+    assert out is net
+    assert out.policy.cfg.entropy_mode == "gaussian"
+
+
+def test_entropy_mode_덮어쓰기가_새로_시작하는_경로에_먹는다():
+    """`--init` 없이 `ActorCritic()` 으로 새로 시작하는 경로 — 덮어쓴 값이 학습에 쓰이는
+
+    `net.policy.cfg.entropy_mode` 에도, `net.save()` 가 읽는 `net.cfg.policy.entropy_mode` 에도
+    같이 반영돼야 한다(둘이 원래 같은 객체를 참조하다가, frozen dataclass 라 새 객체로
+    바꿔 끼우면서 어긋날 수 있다 — 그래서 둘 다 확인한다).
+    """
+    module = _load_train_ppo_module()
+    net = ActorCritic()   # 기본 PolicyConfig().entropy_mode == "gaussian"
+    out = module._apply_entropy_mode(net, "squashed")
+    assert out.policy.cfg.entropy_mode == "squashed"
+    assert out.cfg.policy.entropy_mode == "squashed"
+
+
+def test_entropy_mode_덮어쓰기가_init_체크포인트_경로에도_먹는다(tmp_path):
+    """`ActorCritic.from_policy(a.init)` 로 M3 체크포인트를 이식하는 경로 — 체크포인트 자체는
+
+    `gaussian` 인데 `--entropy-mode squashed` 를 주면 덮어써야 한다(브리프가 지목한 정확히
+    그 시나리오: "체크포인트는 gaussian 인데 --entropy-mode squashed 로 돌렸을 때").
+    """
+    from vtd_rl.policy.net import DrivePolicy, PolicyConfig
+    module = _load_train_ppo_module()
+    m3_path = tmp_path / "m3.pt"
+    DrivePolicy(PolicyConfig(squash=True, entropy_mode="gaussian")).save(str(m3_path))
+
+    net = ActorCritic.from_policy(str(m3_path))
+    assert net.policy.cfg.entropy_mode == "gaussian"   # 이식 직후는 아직 체크포인트 값 그대로
+
+    out = module._apply_entropy_mode(net, "squashed")
+    assert out.policy.cfg.entropy_mode == "squashed"
+    assert out.cfg.policy.entropy_mode == "squashed"
+
+
+@pytest.mark.slow
+def test_entropy_mode_스모크_실행에서_학습_정책까지_실제로_닿는다(tmp_path):
+    """단위 테스트(위 세 개)는 `_apply_entropy_mode` 자체를 직접 부르지만, `main()` 이
+
+    실제로 그 함수를 그 자리에서 부르는지는 별개다 — `--smoke` 로 끝까지 돌려 저장된
+    `ac-best.pt`(학습에 실제로 쓰인 그 `ActorCritic`)를 다시 읽어 `policy.cfg.entropy_mode`
+    가 덮어쓴 값인지 확인한다. `hparams`(CLI 가 파싱한 값)와 저장된 체크포인트(실제로 쓰인
+    값) 둘 다 확인해야 "인자는 받는데 배선이 안 된" 버그를 놓치지 않는다.
+    """
+    from vtd_rl.rl.actor_critic import ActorCritic as _AC
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    out = subprocess.run([os.path.join(REPO, ".venv", "bin", "python"),
+                          os.path.join(REPO, "scripts", "train_ppo.py"),
+                          "--smoke", "--out", str(tmp_path / "run"), "--seed", "0",
+                          "--entropy-mode", "squashed"],
+                         capture_output=True, text=True, env=env, cwd=REPO, timeout=1800)
+    assert out.returncode == 0, out.stderr[-3000:]
+    summary = json.loads(out.stdout.strip().splitlines()[-1])
+    assert summary["hparams"]["entropy_mode"] == "squashed"
+
+    net = _AC.load(str(tmp_path / "run" / "ac-best.pt"))
+    assert net.policy.cfg.entropy_mode == "squashed"

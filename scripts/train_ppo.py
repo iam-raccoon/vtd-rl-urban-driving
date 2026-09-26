@@ -39,6 +39,7 @@ from vtd_rl.eval.verdict import completed_only, judge, major_total  # noqa: E402
 from vtd_rl.policy import device as pick_device  # noqa: E402
 from vtd_rl.policy.dataset import load_dir  # noqa: E402
 from vtd_rl.policy.evaluate import evaluate_policy, evaluate_teacher, violation_counts  # noqa: E402
+from vtd_rl.policy.net import ENTROPY_MODES  # noqa: E402
 from vtd_rl.policy.train import TrainConfig  # noqa: E402
 from vtd_rl.rl.actor_critic import ActorCritic  # noqa: E402
 from vtd_rl.rl.buffer import RolloutBuffer  # noqa: E402
@@ -212,6 +213,12 @@ def _build_parser() -> argparse.ArgumentParser:
                     default=default_cfg.imitation_sigma,
                     help="detach 면 모방 손실이 σ(log_std)를 안 건드린다 — 평균은 그대로 배운다."
                          " M4a 에서 모방이 σ 를 하한에 붙박아 조향 탐색이 없었다")
+    ap.add_argument("--entropy-mode", choices=ENTROPY_MODES, default=None,
+                    help="정책의 entropy_mode(net.py PolicyConfig 참고)를 덮어쓴다. 기본값"
+                         " None 은 체크포인트에 저장된 값을 그대로 쓴다(--init 이 없으면"
+                         " PolicyConfig() 기본값 'gaussian', 기존 동작 불변) — 다음 실험이"
+                         " gaussian 대 squashed 를 맞대결시키려면 체크포인트를 새로 굽지 않고도"
+                         " CLI 로 바꿀 수 있어야 한다")
     ap.add_argument("--smoke", action="store_true",
                     help="환경 2개·스텝 4000·롤아웃 64·동기 벡터 환경·평가는 각 단계 코스 A 한 판씩 시드 1개"
                          "·주기 평가 간격도 좁혀 로그 두 줄 이상을 남긴다")
@@ -264,6 +271,29 @@ def _build_optimizer(net, cfg: PPOConfig) -> torch.optim.Optimizer:
     return torch.optim.Adam(net.parameters(), lr=cfg.lr)
 
 
+def _apply_entropy_mode(net: ActorCritic, entropy_mode: str | None) -> ActorCritic:
+    """`--entropy-mode` 덮어쓰기 — `None` 이면 손대지 않고 그대로 돌려준다(체크포인트 값 유지,
+
+    기존 동작 불변). 값이 있으면 `net.policy.cfg`(학습에 실제로 쓰이는 정책)와
+    `net.cfg.policy`(`net.save()` 가 체크포인트에 쓰는 자리) 둘 다 새 값으로 바꾼다 —
+    `ActorCritic.__init__` 에서 이 둘은 원래 같은 `PolicyConfig` 객체를 참조하지만
+    (`self.policy = DrivePolicy(cfg.policy)`), `PolicyConfig`/`ActorCriticConfig` 가 둘 다
+    frozen dataclass 라 덮어쓰려면 새 인스턴스로 바꿔 끼워야 하고, 그러면 참조가 갈라진다 —
+    한쪽만 바꾸면 학습은 새 값을 쓰는데 저장된 체크포인트엔 옛 값이 실리는(또는 그 반대인)
+    어긋남이 생긴다.
+
+    `ActorCritic.from_policy(a.init)`(체크포인트 이식)와 `ActorCritic()`(새로 시작) 두 경로가
+    `main()` 에서 이미 `net` 하나로 합류한 뒤 이 함수를 통과하므로, 호출부는 어느 경로로
+    만들어졌는지 몰라도 된다.
+    """
+    if entropy_mode is None:
+        return net
+    new_policy_cfg = dataclasses.replace(net.policy.cfg, entropy_mode=entropy_mode)
+    net.policy.cfg = new_policy_cfg
+    net.cfg = dataclasses.replace(net.cfg, policy=new_policy_cfg)
+    return net
+
+
 def main():
     ap = _build_parser()
     a = ap.parse_args()
@@ -313,6 +343,7 @@ def main():
         # 준비 코드가 죽어도 finally 가 반드시 타도록 venv 생성부터 이 try 안에 둔다.
         venv = make_vec_env(a.curricula, a.envs, train_env_cfg, seed=a.seed, asynchronous=not a.smoke)
         net = (ActorCritic.from_policy(a.init, device=dev) if a.init else ActorCritic()).to(dev)
+        net = _apply_entropy_mode(net, a.entropy_mode)   # 두 경로(이식/새로 시작) 모두 여기 합류한 뒤 지난다
         ref_state = snapshot_policy(net)   # 드리프트 기준점 — `--init` 로드 직후, 갱신 전
         opt = _build_optimizer(net, cfg)
         buf = RolloutBuffer(a.rollout, a.envs, dev)
