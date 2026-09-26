@@ -43,8 +43,8 @@ from vtd_rl.policy.net import ENTROPY_MODES  # noqa: E402
 from vtd_rl.policy.train import TrainConfig  # noqa: E402
 from vtd_rl.rl.actor_critic import ActorCritic  # noqa: E402
 from vtd_rl.rl.buffer import RolloutBuffer  # noqa: E402
-from vtd_rl.rl.diagnostics import (OutcomeCounter, ReturnTracker, RewardTermTracker,  # noqa: E402
-                                   policy_drift, snapshot_policy)
+from vtd_rl.rl.diagnostics import (ActionBoxTracker, OutcomeCounter, ReturnTracker,  # noqa: E402
+                                   RewardTermTracker, policy_drift, snapshot_policy)
 from vtd_rl.rl.ppo import PPOConfig, dagger_batches, update  # noqa: E402
 from vtd_rl.rl.vec_env import make_vec_env, vec_obs_to_arrays  # noqa: E402
 from vtd_rl.world.board import load_curriculum  # noqa: E402
@@ -171,6 +171,24 @@ def _bootstrap_reward_done(reward, term, prev_done, value: torch.Tensor):
     reward_t = torch.where(dummy, value.detach(), reward_t)
     done_t = torch.where(dummy, torch.ones_like(done_t), done_t)
     return reward_t, done_t
+
+
+def _add_action_box_sample(box: ActionBoxTracker, action: dict, out: dict, valid_np: np.ndarray):
+    """행동 상자 진단(M4c) — 한 걸음 분량을 `box` 에 누적한다.
+
+    `mean_valid` 는 반드시 `out["mean"]`(스쿼시 **전** 평균, `DrivePolicy.sample()`이 이미
+    계산해 둔 값을 그대로 얹은 것)에서 와야 한다 — 실행 행동(`action["control"]`)으로 재면
+    tanh 뒤라 `|control|≤1` 이 자명해 상자가 실제로 닫혔는지 아무것도 증명 못 한다(M4c 최종
+    리뷰 Important: `mean_abs_mean` 을 실행 행동으로 재게 바뀌는 돌연변이가 살아남았다 —
+    두 배열을 뚜렷이 다른 값으로 주는 값 단위 테스트가 이 자리를 잠근다,
+    `tests/rl/test_train_ppo.py::test_행동상자_표본이_스쿼시_전_평균으로_들어간다`).
+
+    자동 리셋 더미 행(`valid_np` 가 거짓인 자리)은 `explained_variance` 와 같은 이유로 뺀다 —
+    환경이 그 행의 행동 자체를 무시하기 때문이다.
+    """
+    if not valid_np.any():
+        return
+    box.add(action["control"][valid_np], out["mean"].detach().cpu().numpy()[valid_np])
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -371,9 +389,9 @@ def main():
         while step < a.steps:
             buf.reset()
             values_log, valid_log = [], []
-            # 행동 상자 진단 누적기 — 롤아웃마다 평균 내 `row` 에 싣는다(아래 `act_abs_mean` 등).
-            act_abs_sum, act_sat_count, act_count = 0.0, 0, 0
-            mean_abs_sum, mean_count = 0.0, 0
+            # 행동 상자 진단 누적기 — 롤아웃마다 평균 내 `row` 에 싣는다(`ActionBoxTracker.stats()`
+            # 의 `act_abs_mean`/`act_sat_frac`/`mean_abs_mean`).
+            box = ActionBoxTracker()
             for _ in range(a.rollout):
                 vec, objs, mask = (torch.as_tensor(x, device=dev) for x in vec_obs_to_arrays(obs))
                 with torch.no_grad():
@@ -406,17 +424,9 @@ def main():
                 # 행동 상자 진단 — tanh 스쿼시는 `|control| ≤ 1` 을 자명하게 통과시켜 그 검사만으론
                 # 아무것도 못 증명한다(리뷰 실측: 평균을 ±7 로 밀어도 100% 통과하지만 40.4% 가
                 # 정확히 ±1.0 이라 클램프와 다를 게 없다). 진짜 질문은 포화(`act_sat_frac`)와
-                # 스쿼시 전 평균이 상자를 벗어나는지(`mean_abs_mean`)다. 자동 리셋 더미 행
-                # (`valid_np`가 거짓인 자리)은 환경이 행동 자체를 무시하므로 `explained_variance`
-                # 와 같은 이유로 뺀다.
-                if valid_np.any():
-                    ctrl_valid = action["control"][valid_np]
-                    act_abs_sum += float(np.abs(ctrl_valid).sum())
-                    act_sat_count += int((np.abs(ctrl_valid) > 0.99).sum())
-                    act_count += ctrl_valid.size
-                    mean_valid = out["mean"].detach().cpu().numpy()[valid_np]
-                    mean_abs_sum += float(np.abs(mean_valid).sum())
-                    mean_count += mean_valid.size
+                # 스쿼시 전 평균이 상자를 벗어나는지(`mean_abs_mean`)다 — `_add_action_box_sample`
+                # 이 더미 행을 거르고 `out["mean"]`(스쿼시 전)을 쓰는 배선을 책임진다.
+                _add_action_box_sample(box, action, out, valid_np)
                 done_mask = np.asarray(term) | np.asarray(trunc)
                 # PPO 가 실제로 최대화하는 확률적 롤아웃 리턴 — 결정적 평가 보상과 달리 한 번도
                 # 로깅된 적이 없었다(M4a 붕괴 원인 불명의 근본 원인, diagnostics.py 모듈 docstring).
@@ -458,19 +468,15 @@ def main():
             # `policy_drift()`(drift_l2/_rel/_log_std/_rest_rel)는 이름이 서로 겹치지 않고
             # `stats`(policy/value/entropy/approx_kl/clip_frac/imitation/imitation_coef/updates)
             # 와도 안 겹친다(M4a 에서 `**stats` 가 바깥 `updates` 를 조용히 덮어쓴 적이 있어
-            # 대조해 확인했다). `act_abs_mean`/`act_sat_frac`/`mean_abs_mean`(M4c 행동 상자 진단)도
-            # 위 다섯 그룹 어느 키와도 안 겹친다(대조 확인 완료).
-            act_abs_mean = (act_abs_sum / act_count) if act_count else None
-            act_sat_frac = (act_sat_count / act_count) if act_count else None
-            mean_abs_mean = (mean_abs_sum / mean_count) if mean_count else None
+            # 대조해 확인했다). `box.stats()`(act_abs_mean/act_sat_frac/mean_abs_mean, M4c 행동
+            # 상자 진단)도 위 다섯 그룹 어느 키와도 안 겹친다(대조 확인 완료).
             row = {"step": step, "iter": updates, "elapsed_s": time.perf_counter() - t0,
                    **stats,
                    **tracker.stats(),
                    **terms.stats(),
                    **policy_drift(net, ref_state),
                    "explained_variance": ev_var if ev_var == ev_var else None,  # NaN → None(표준 JSON)
-                   "act_abs_mean": act_abs_mean, "act_sat_frac": act_sat_frac,
-                   "mean_abs_mean": mean_abs_mean,
+                   **box.stats(),
                    "log_std": net.policy.log_std.detach().cpu().tolist(),
                    "hparams": hparams}
 

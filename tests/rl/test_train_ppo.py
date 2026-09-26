@@ -4,6 +4,7 @@ import math
 import os
 import subprocess
 
+import numpy as np
 import pytest
 import torch
 
@@ -322,6 +323,59 @@ def test_연습_모드가_항목별_보상을_남긴다(tmp_path):
     with_values = [r for r in rows if r["act_abs_mean"] is not None]
     assert with_values, "행동 상자 진단이 한 번도 안 찍혔다"
     assert all(0.0 <= r["act_sat_frac"] <= 1.0 for r in with_values)
+
+
+def test_행동상자_표본이_스쿼시_전_평균으로_들어간다():
+    """`_add_action_box_sample` 이 `mean_abs_mean` 을 `out["mean"]`(스쿼시 전 평균)으로 채우는지
+
+    — 실행 행동(`action["control"]`)으로 재게 바뀌는 돌연변이가 M4c 최종 리뷰에서 살아남았다.
+    두 배열을 뚜렷이 다른 값으로 줘 실수로 바뀌면 확실히 갈리게 한다(값 단위 잠금).
+    """
+    from vtd_rl.rl.diagnostics import ActionBoxTracker
+    mod = _load_train_ppo_module()
+
+    box = ActionBoxTracker()
+    action = {"control": np.array([[0.2, -0.3], [0.1, 0.4]], dtype=np.float32)}
+    out = {"mean": torch.tensor([[3.0, -2.0], [1.5, -0.5]])}
+    valid_np = np.array([True, True])
+    mod._add_action_box_sample(box, action, out, valid_np)
+    s = box.stats()
+
+    expected_act_abs = float(np.abs(action["control"]).mean())     # (0.2+0.3+0.1+0.4)/4 = 0.25
+    expected_mean_abs = float(np.abs(out["mean"].numpy()).mean())  # (3+2+1.5+0.5)/4 = 1.75
+    assert s["act_abs_mean"] == pytest.approx(expected_act_abs)
+    assert s["mean_abs_mean"] == pytest.approx(expected_mean_abs)
+    assert s["mean_abs_mean"] != pytest.approx(expected_act_abs)
+
+
+def test_행동상자_표본은_자동리셋_더미_행을_거른다():
+    """`valid_np` 가 거짓인 자리(자동 리셋 더미)는 진단에서 빠져야 한다 — `explained_variance`
+
+    와 같은 이유(환경이 그 행의 행동 자체를 무시한다).
+    """
+    from vtd_rl.rl.diagnostics import ActionBoxTracker
+    mod = _load_train_ppo_module()
+
+    box = ActionBoxTracker()
+    action = {"control": np.array([[1.0, 1.0], [0.0, 0.0]], dtype=np.float32)}
+    out = {"mean": torch.tensor([[9.0, 9.0], [0.0, 0.0]])}
+    valid_np = np.array([True, False])   # 두 번째 환경은 자동 리셋 더미
+    mod._add_action_box_sample(box, action, out, valid_np)
+    s = box.stats()
+    assert s["act_abs_mean"] == pytest.approx(1.0)
+    assert s["mean_abs_mean"] == pytest.approx(9.0)
+
+
+def test_행동상자_표본은_전부_더미면_아무것도_안_더한다():
+    from vtd_rl.rl.diagnostics import ActionBoxTracker
+    mod = _load_train_ppo_module()
+
+    box = ActionBoxTracker()
+    action = {"control": np.array([[1.0, 1.0]], dtype=np.float32)}
+    out = {"mean": torch.tensor([[9.0, 9.0]])}
+    valid_np = np.array([False])
+    mod._add_action_box_sample(box, action, out, valid_np)
+    assert box.stats() == {"act_abs_mean": None, "act_sat_frac": None, "mean_abs_mean": None}
 
 
 def test_인자를_안_주면_RewardConfig_기본값과_같다():

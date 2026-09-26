@@ -151,6 +151,52 @@ class RewardTermTracker:
         return out
 
 
+# `|control| > 이 값` 이면 포화로 센다 — tanh 는 이론상 못 닿지만 부동소수 반올림으로 정확히
+# ±1.0 이 되는 표본이 있다(리뷰 실측 40.4%, docs/reports/m4c-ppo-notes.md). M4c 최종 리뷰
+# Important: 이 문턱을 0.5 로 바꾸는 돌연변이가 살아남았다 — 값으로 잠근다
+# (tests/rl/test_diagnostics.py::test_행동상자_진단_문턱은_0점99다).
+ACTION_SAT_THRESHOLD = 0.99
+
+
+class ActionBoxTracker:
+    """행동 상자 진단(M4c) — 롤아웃 전체(여러 걸음)를 누적해 마지막에 한 번 나눈다.
+
+    tanh 스쿼시는 `|control| ≤ 1` 을 자명하게 통과시켜 그 검사만으론 상자가 실제로 닫혔는지
+    아무것도 증명하지 못한다(리뷰 실측: 평균을 ±7 로 밀어도 100% 통과하지만 40.4%가 정확히
+    ±1.0 이라 클램프와 행동상 차이가 없다). 그래서 두 가지를 따로 잰다 — 포화율(`act_sat_frac`,
+    `ACTION_SAT_THRESHOLD` 문턱)과 **스쿼시 전** 평균이 상자를 벗어나는지(`mean_abs_mean`).
+
+    `add()` 에 넘기는 `mean_valid` 는 반드시 스쿼시 전 평균(`DrivePolicy.sample()`의
+    `out["mean"]`)이어야 한다 — 실행 행동(`ctrl_valid`)으로 재면 tanh 뒤라 상자가 닫혔는지
+    스스로 증명하는 셈이 되어 버린다(M4c 최종 리뷰 Important, `mean_abs_mean` 을 실행 행동으로
+    재게 바뀌는 돌연변이가 살아남았다 — 그 배선은 `scripts/train_ppo.py::_add_action_box_sample`
+    이 지킨다, 여기서는 이미 받은 두 배열의 산술만 책임진다).
+
+    자동 리셋 더미 행(호출부의 `valid_np` 가 거짓인 자리)은 호출부가 미리 걸러 넘겨야 한다.
+    """
+
+    def __init__(self, sat_threshold: float = ACTION_SAT_THRESHOLD):
+        self.sat_threshold = sat_threshold
+        self._act_abs_sum, self._act_sat_count, self._act_count = 0.0, 0, 0
+        self._mean_abs_sum, self._mean_count = 0.0, 0
+
+    def add(self, ctrl_valid: np.ndarray, mean_valid: np.ndarray):
+        ctrl_valid = np.asarray(ctrl_valid)
+        mean_valid = np.asarray(mean_valid)
+        if ctrl_valid.size:
+            self._act_abs_sum += float(np.abs(ctrl_valid).sum())
+            self._act_sat_count += int((np.abs(ctrl_valid) > self.sat_threshold).sum())
+            self._act_count += ctrl_valid.size
+        if mean_valid.size:
+            self._mean_abs_sum += float(np.abs(mean_valid).sum())
+            self._mean_count += mean_valid.size
+
+    def stats(self) -> dict:
+        return {"act_abs_mean": (self._act_abs_sum / self._act_count) if self._act_count else None,
+                "act_sat_frac": (self._act_sat_count / self._act_count) if self._act_count else None,
+                "mean_abs_mean": (self._mean_abs_sum / self._mean_count) if self._mean_count else None}
+
+
 def snapshot_policy(net) -> dict:
     """정책 파라미터를 떼어 복사한다 — clone 을 빼면 이후 갱신이 기준까지 따라 움직인다."""
     return {k: v.detach().clone() for k, v in net.policy.state_dict().items()}

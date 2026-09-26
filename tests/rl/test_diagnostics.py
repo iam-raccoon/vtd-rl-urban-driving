@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import torch
 
 from vtd_rl.rl.diagnostics import (OutcomeCounter, ReturnTracker, policy_drift,
@@ -182,3 +183,35 @@ def test_이동창이_최근_것만_남긴다():
         t.add_done(np.array([True]))
     assert t.stats()["term_n"] == 2
     assert abs(t.stats()["term_progress_mean"] - 2.5) < 1e-9   # (2+3)/2
+
+
+def test_행동상자_진단_문턱은_0점99다():
+    """M4c 최종 리뷰 Important — 포화 문턱 `0.99` 를 `0.5` 로 바꾸는 돌연변이가 살아남았다.
+
+    0.5~0.99 사이 값(0.7)을 하나 섞어 두 문턱이 실제로 다른 답을 내게 한다 — 구조적 검사
+    (0<=frac<=1)만으로는 이 돌연변이를 못 잡는다.
+    """
+    from vtd_rl.rl.diagnostics import ACTION_SAT_THRESHOLD, ActionBoxTracker
+    assert ACTION_SAT_THRESHOLD == pytest.approx(0.99)
+
+    box = ActionBoxTracker()
+    box.add(np.array([0.2, -0.995, 0.7, -0.3]), np.array([3.0, -0.5, 0.1, 0.2]))
+    box.add(np.array([1.0, -0.5]), np.array([-1.5, 0.05]))
+    s = box.stats()
+
+    # |값| = 0.2, 0.995, 0.7, 0.3, 1.0, 0.5 — 0.99 문턱을 넘는 건 0.995·1.0 뿐(2/6).
+    # 0.5 문턱으로 잘못 바뀌면 0.995·0.7·1.0 이 걸려 3/6 이 나온다 — 값이 갈린다.
+    assert s["act_sat_frac"] == pytest.approx(2 / 6)
+    assert s["act_abs_mean"] == pytest.approx((0.2 + 0.995 + 0.7 + 0.3 + 1.0 + 0.5) / 6)
+    # mean_abs_mean 은 같은 걸음의 "실행 행동"이 아니라 "스쿼시 전 평균" 입력에서만 나와야 한다
+    # (|3.0|+|-0.5|+|0.1|+|0.2|+|-1.5|+|0.05|)/6 — 실행 행동 평균(위 act_abs_mean)과 뚜렷이 다르다.
+    expected_mean_abs = (3.0 + 0.5 + 0.1 + 0.2 + 1.5 + 0.05) / 6
+    assert s["mean_abs_mean"] == pytest.approx(expected_mean_abs)
+    assert s["mean_abs_mean"] != pytest.approx(s["act_abs_mean"])
+
+
+def test_행동상자_진단_표본이_없으면_None():
+    from vtd_rl.rl.diagnostics import ActionBoxTracker
+    box = ActionBoxTracker()
+    s = box.stats()
+    assert s == {"act_abs_mean": None, "act_sat_frac": None, "mean_abs_mean": None}
