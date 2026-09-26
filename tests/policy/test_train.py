@@ -126,20 +126,56 @@ def _edge_batch():
 
 
 def test_스쿼시_손실의_최소점은_atanh_라벨이다():
-    """atanh 를 빼면 최소점이 `mean=control` 로 옮겨간다 — 기울기 0 지점으로 잠근다."""
+    """atanh 를 빼면 최소점이 `mean=control` 로 옮겨간다 — 기울기 0 지점으로 잠근다.
+
+    `atanh_eps` 를 명시적으로 1e-6 으로 고정한다 — 이 테스트는 "거의 안 잘리는 atanh" 라는
+    수학적 성질을 보는 것이지, `TrainConfig` 의 기본값이 무엇이든 그대로 통과해야 하는
+    테스트가 아니다(기본값은 M4c Task 5 실측으로 정해진다).
+    """
     vec, objs, mask, control, turn = _edge_batch()
     log_std = torch.zeros(2)
     at = torch.atanh(control.clamp(-1.0 + 1e-6, 1.0 - 1e-6))
 
     mean = at.clone().requires_grad_(True)
     policy_loss(_FixedNet(mean, log_std, torch.zeros(len(turn), 3)),
-                (vec, objs, mask, control, turn), TrainConfig(squash=True))[0].backward()
+                (vec, objs, mask, control, turn),
+                TrainConfig(squash=True, atanh_eps=1e-6))[0].backward()
     assert torch.allclose(mean.grad, torch.zeros_like(mean), atol=1e-5)   # atanh 지점이 최소
 
     mean2 = control.clone().requires_grad_(True)
     policy_loss(_FixedNet(mean2, log_std, torch.zeros(len(turn), 3)),
-                (vec, objs, mask, control, turn), TrainConfig(squash=True))[0].backward()
+                (vec, objs, mask, control, turn),
+                TrainConfig(squash=True, atanh_eps=1e-6))[0].backward()
     assert mean2.grad.abs().max() > 0.3          # 라벨 지점은 최소가 아니다
+
+
+def test_atanh_eps가_클램프_경계를_정한다():
+    """`atanh_eps` 가 커지면 atanh 이전에 자르는 경계가 넓어진다.
+
+    선생님 라벨의 10.48% 가 정확히 ±1(가속은 20.77%)이라 이 경계 폭이 손실·기울기를 지배한다
+    (M4c Task 5 실측) — 여기서는 경계가 실제로 `atanh_eps` 를 따라 움직이는지만 본다.
+    """
+    control = torch.tensor([[0.995, -0.995]])
+    log_std = torch.zeros(2)
+    vec = torch.zeros(1, VEC_DIM)
+    objs = torch.zeros(1, OBJ_N, OBJ_DIM)
+    mask = torch.zeros(1, OBJ_N)
+    turn = torch.zeros(1, dtype=torch.long)
+
+    # eps=1e-2 → 경계 0.99 보다 큰 0.995 는 잘려서 최소점이 atanh(0.99) 다.
+    at_wide = torch.atanh(control.clamp(-0.99, 0.99))
+    mean_wide = at_wide.clone().requires_grad_(True)
+    policy_loss(_FixedNet(mean_wide, log_std, torch.zeros(1, 3)),
+                (vec, objs, mask, control, turn),
+                TrainConfig(squash=True, atanh_eps=1e-2))[0].backward()
+    assert torch.allclose(mean_wide.grad, torch.zeros_like(mean_wide), atol=1e-5)
+
+    # 같은 지점(atanh(0.99))이 eps=1e-6 에서는 최소가 아니다 — 0.995 가 거의 안 잘리기 때문.
+    mean_narrow = at_wide.clone().requires_grad_(True)
+    policy_loss(_FixedNet(mean_narrow, log_std, torch.zeros(1, 3)),
+                (vec, objs, mask, control, turn),
+                TrainConfig(squash=True, atanh_eps=1e-6))[0].backward()
+    assert mean_narrow.grad.abs().max() > 1e-3
 
 
 def test_스쿼시_모방손실은_행동의_음의로그가능도다():
@@ -152,7 +188,9 @@ def test_스쿼시_모방손실은_행동의_음의로그가능도다():
     net = DrivePolicy(PolicyConfig(trunk=(32, 32), squash=True))
     batch = next(iter(toy_dataset(64).batches(32, generator=torch.Generator().manual_seed(0))))
     vec, objs, mask, control, _turn = batch
-    _loss, parts = policy_loss(net, batch, TrainConfig(squash=True))
+    # 기준식(ref)이 직접 하드코딩한 1e-6 클램프와 짝을 맞추려면 policy_loss 도 같은
+    # atanh_eps 를 써야 한다 — 기본값(M4c Task 5 실측으로 정함)에 조용히 기대지 않는다.
+    _loss, parts = policy_loss(net, batch, TrainConfig(squash=True, atanh_eps=1e-6))
     with torch.no_grad():
         mean, log_std, _logits = net(vec, objs, mask)
         squashed = torch.distributions.TransformedDistribution(
@@ -202,3 +240,14 @@ def test_비스쿼시_control_mae는_그대로다():
 
 def test_스쿼시_기본값은_꺼짐():
     assert TrainConfig().squash is False
+
+
+def test_atanh_eps_기본값은_실측으로_고른_1e_2다():
+    """M4c Task 5 실측(`runs/lab-main/2026-09-17-dagger-fix2/data`, 200,511 행, 진짜 크기
+
+    정책, BC 400 스텝, 같은 시드·배치 순서): ε∈{1e-2,1e-3,1e-4,1e-6} 중 행동공간 MAE
+    (`|tanh(mean)-control|` 평균)가 가장 낮은 것은 ε=1e-2(0.1802) 다 — 1e-3(0.1978),
+    1e-4(0.2175), 1e-6(0.2483) 순으로 나빠진다(손실값 자체는 ε 마다 스케일이 달라 비교 기준이
+    아니다). 라벨의 10.48%(가속 20.77%, 조향 0.19%)가 정확히 ±1 이라 ε=1e-6 이면
+    기울기 노름 중앙값이 54.72(비스쿼시 기준 1.59 의 34배)까지 뛴다."""
+    assert TrainConfig().atanh_eps == pytest.approx(1e-2)

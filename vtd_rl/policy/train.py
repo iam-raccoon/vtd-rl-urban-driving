@@ -27,6 +27,18 @@ class TrainConfig:
     sigma_grad: bool = True         # False 면 NLL 을 log_std.detach() 로 계산한다(M4b: σ 만 푼다)
     squash: bool = False            # True 면 선생님 행동을 atanh 로 옮겨 스쿼시 밀도로 배운다
                                      # (net.py 의 squash=True 정책과 짝을 맞춘다). 기본값 False.
+    atanh_eps: float = 1e-2          # squash=True 일 때 atanh 전에 선생님 행동을 자르는 여유.
+                                     # M4c Task 5 리뷰 실측: 실데이터(200,511 행) 라벨의 10.48%가
+                                     # 정확히 ±1 이다(가속 20.77%, 조향 0.19%). 1e-6 이면
+                                     # atanh(±(1-1e-6))=±7.2477 이라 이 표본들이 NLL 을 지배하고,
+                                     # 실데이터 BC 400 스텝에서 기울기 노름 중앙값이 1.59(비스쿼시
+                                     # 기준)→54.72(34배)로 뛰어 100%가 grad_clip=1.0 에 걸린다.
+                                     # ε∈{1e-2,1e-3,1e-4,1e-6}를 같은 시드·배치 순서로 실측한 결과
+                                     # 행동공간 MAE(|tanh(mean)-control| 평균)가 가장 낮은 값은
+                                     # 1e-2(0.1802) 였다(1e-3 0.1978, 1e-4 0.2175, 1e-6 0.2483 —
+                                     # 손실 스케일 자체는 ε 마다 달라 비교 기준이 아니다). 전체 표는
+                                     # `.superpowers/sdd/2026-09-23-m4c-action-box-and-reward/
+                                     # task-5-report.md` 에 있다. squash=False 면 이 값을 안 쓴다.
 
 
 def policy_loss(net, batch, cfg: TrainConfig):
@@ -40,7 +52,9 @@ def policy_loss(net, batch, cfg: TrainConfig):
     if cfg.squash:
         # 선생님 행동은 상자 안 값이다. 스쿼시 매개화에서는 그 행동의 로그가능도가
         # 가우시안 밀도(atanh 지점) 빼기 야코비안이다 — atanh 은 ±1 에서 발산하므로 잘라 준다.
-        target = torch.atanh(control.clamp(-1.0 + 1e-6, 1.0 - 1e-6))
+        # 자르는 폭은 cfg.atanh_eps 다(실데이터 라벨의 10.48%가 정확히 ±1 이라 이 값이
+        # 손실·기울기를 지배한다 — TrainConfig.atanh_eps 문서 참고).
+        target = torch.atanh(control.clamp(-1.0 + cfg.atanh_eps, 1.0 - cfg.atanh_eps))
         jac = _tanh_log_det(target)          # 음수 — NLL 에 더한다
     else:
         target, jac = control, 0.0
