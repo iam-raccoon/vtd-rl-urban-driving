@@ -37,11 +37,20 @@ def _outcome_from_info(board, seed, info, steps, reward) -> EpisodeOutcome:
                           sum(scores) / len(scores), result["sheet"])
 
 
-def run_policy_episode(env, policy, board_name: str, seed: int, max_steps: int = 20000):
+def run_policy_episode(env, policy, board_name: str, seed: int, max_steps: int = 20000,
+                       deterministic: bool = True, generator=None):
+    """판 하나를 정책으로 몬다.
+
+    `deterministic`/`generator` 는 `DrivePolicy.act()` 로 그대로 흘려보낸다 — M4c 최종 리뷰:
+    3M 정책이 결정적(`tanh(mean)`)으로는 22~33% 만 완주하는데 확률적으로는 전부 완주한다
+    (`scripts/eval_det_vs_stoch.py`, `docs/reports/m4c-ppo-notes.md`). 기본값은 그대로
+    `deterministic=True` 라 기존 채점 경로(모든 기존 호출부)는 인자를 안 주면 예전과 100% 같다.
+    """
     obs, info = env.reset(seed=seed, options={"board": board_name})
     total, steps = 0.0, 0
     for _ in range(max_steps):
-        obs, reward, terminated, truncated, info = env.step(policy.act(obs, deterministic=True))
+        obs, reward, terminated, truncated, info = env.step(
+            policy.act(obs, deterministic=deterministic, generator=generator))
         total += reward
         steps += 1
         if terminated or truncated:
@@ -49,10 +58,18 @@ def run_policy_episode(env, policy, board_name: str, seed: int, max_steps: int =
     return _outcome_from_info(board_name, seed, info, steps, total)
 
 
-def evaluate_policy(policy, boards, seeds=(0, 1, 2), config: EnvConfig | None = None) -> dict:
+def evaluate_policy(policy, boards, seeds=(0, 1, 2), config: EnvConfig | None = None,
+                    deterministic: bool = True, generator=None) -> dict:
+    """`deterministic=False`(+`generator`)면 확률적 평가 — 판·시드 조합을 정해진 순서로 돌며
+
+    같은 `generator` 인스턴스를 계속 소비하므로, 호출부가 매번 새 `torch.Generator().manual_seed(k)`
+    를 넘기면 전체 결과가 재현 가능하다. 기본값(둘 다 안 주면)은 예전과 완전히 같다.
+    """
     env = VtdDriveEnv(list(boards), config or EnvConfig())
     try:
-        episodes = [run_policy_episode(env, policy, b.name, s) for b in boards for s in seeds]
+        episodes = [run_policy_episode(env, policy, b.name, s, deterministic=deterministic,
+                                       generator=generator)
+                   for b in boards for s in seeds]
     finally:
         env.close()
     return _summary(episodes)
