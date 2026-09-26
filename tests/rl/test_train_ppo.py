@@ -242,6 +242,59 @@ def test_reward_terms가_비어있으면_환경_수만큼_빈_dict를_낸다():
     assert mod._reward_terms_per_env({}, 2) == [{}, {}]
 
 
+def test_reward_terms_혼합_리셋을_실제_gymnasium_add_info로_검증한다():
+    """병렬 학습의 정상 상태 — 일부 환경은 방금 리셋(빈 dict), 나머지는 주행 중(실값) —
+
+    을 실제 `gymnasium.vector.vector_env.VectorEnv._add_info` 에 태워 만든다(가짜 dict 를
+    손으로 짜지 않는다 — gymnasium 이 채움 방식을 바꾸면 이 테스트가 그걸 잡아야 한다).
+
+    `_add_info` 는 `reward_terms`(dict) 처럼 값이 dict 인 키를 재귀적으로 파고들어
+    `info["reward_terms"]` 자체를 `{항목명: 환경별 배열, "_항목명": 환경별 bool 마스크}` 로
+    만든다(2026-09-26 실측, `.venv/.../gymnasium/vector/vector_env.py` 소스로 직접 확인 —
+    이 태스크의 브리프가 "마스크 없으면 모든 환경이 그 항목을 낸 것"이라 적었지만, 실측으로는
+    **마스크는 항목 키가 하나라도 등장하면 항상 함께 생기고**(전원이 냈으면 전원 True인 마스크가
+    생긴다), 항목 키 자체가 아예 없을 때만(=이 걸음에 그 항목을 낸 환경이 하나도 없을 때만)
+    마스크도 같이 없다 — `_reward_terms_per_env` 의 "마스크 없으면 전원 유효" 처리는 그 경우를
+    덮는 방어 코드다). 리셋 직후 환경(env0)의 자리는 gymnasium 이 0.0 으로 채우고 그 자리의
+    마스크(`_progress` 등)를 거짓으로 낸다 — `_reward_terms_per_env` 는 이 마스크를 직접 읽어
+    거짓인 자리를 dict 에서 아예 빼야 한다(채움값 0.0 에 암묵적으로 기대면 안 된다).
+    """
+    import types
+
+    import numpy as np
+    from gymnasium.vector.vector_env import VectorEnv
+
+    from vtd_rl.rl.diagnostics import TERM_KEYS, RewardTermTracker
+
+    class _Dummy:            # VectorEnv._add_info 는 self.num_envs 만 본다
+        num_envs = 2
+
+    d = _Dummy()
+    d._add_info = types.MethodType(VectorEnv._add_info, d)
+
+    real = {"progress": 1.0, "time": -0.2, "violation": -3.0, "comfort": -0.5}
+    info: dict = {}
+    info = d._add_info(info, {"reward_terms": {}}, 0)      # env0: 방금 리셋
+    info = d._add_info(info, {"reward_terms": real}, 1)    # env1: 주행 중(실값)
+
+    mod = _load_train_ppo_module()
+    out = mod._reward_terms_per_env(info, 2)
+
+    assert not (set(out[0]) & set(TERM_KEYS)), out[0]   # env0 → {} (또는 TERM_KEYS 가 없는 dict)
+    assert out[1] == pytest.approx(real)                # env1 → 넣은 값 그대로
+
+    # `RewardTermTracker.add()` 에 실제로 먹여 env0 누적이 정확히 0 으로 남는지까지 확인한다 —
+    # "0 을 더한 것"과 "안 더한 것"이 지금은 결과가 같지만(모든 항목이 순가산량), 나머지
+    # 코드가 이 어댑터를 신뢰해도 되는 근거는 이 단언이다.
+    tracker = RewardTermTracker(2)
+    tracker.add({"reward_terms": out})
+    tracker.add_done(np.array([True, False]))   # env0 만 이 걸음에 끝난 것으로 표시해 바로 flush
+    stats = tracker.stats()
+    assert stats["term_n"] == 1
+    for k in TERM_KEYS:
+        assert stats[f"term_{k}_mean"] == 0.0, k
+
+
 @pytest.mark.slow
 def test_연습_모드가_항목별_보상을_남긴다(tmp_path):
     env = dict(os.environ)

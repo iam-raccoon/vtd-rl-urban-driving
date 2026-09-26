@@ -116,18 +116,35 @@ def _explained_variance(returns: torch.Tensor, values: torch.Tensor) -> float:
 def _reward_terms_per_env(info: dict, n_envs: int) -> list:
     """`venv.step()` 의 `info["reward_terms"]` 를 `RewardTermTracker.add()` 의 계약
 
-    (환경별 dict 리스트)에 맞춰 되돌린다.
+    (환경별 dict 리스트, `vtd_rl/rl/diagnostics.py` 의 `RewardTermTracker.add()` 참고)에
+    맞춰 되돌린다.
 
     gymnasium 의 정보 벡터화(`VectorEnv._add_info`)는 값이 dict 면 재귀적으로 파고들어
     `{항목명: 환경별 배열}` 로 만든다 — `outcome`(문자열)처럼 단순 값이 내는 "환경 수만큼의
     배열"과 달리, `reward_terms`(dict) 는 이렇게 **전치된** 모양으로 나온다(2026-09-26 실측:
     판이 실제로 끝나는 스텝에서도 이 모양이다 — 브리프의 "환경 수만큼의 dict 배열" 가정과
     다르다). 모든 환경이 리셋 직후(빈 dict)면 gymnasium 이 재귀할 것이 없어 `{}` 그대로
-    나온다. `_` 로 시작하는 마스크 키(`_progress` 등)는 항목이 아니므로 걸러낸다.
+    나온다.
+
+    일부 환경만 그 항목을 냈을 때(병렬 학습의 정상 상태 — 일부는 방금 리셋, 나머지는 주행
+    중)는 gymnasium 이 나머지 자리를 채움값(실측: 0.0)으로 메우고 `_<항목명>` 불리언 마스크
+    배열을 같이 낸다(2026-09-26 실측, `.venv/.../gymnasium/vector/vector_env.py::_add_info`
+    소스로 직접 확인). 채움값이 우연히 0.0 이고 네 항목이 전부 순가산량이라 지금은 걸러내지
+    않아도 수치적으로 무해하지만, 그건 gymnasium 구현 세부에 기대는 것이다 — 여기서는 마스크를
+    직접 읽어 거짓인 자리를 아예 dict 에서 뺀다. 마스크 키(`_progress` 등) 자체가 없으면
+    (실측: 그 항목을 하나도 낸 환경이 없어 항목 키조차 없을 때만 이렇다) 전원 유효로 본다.
     """
     rt = info.get("reward_terms") or {}
-    return [{k: float(v[i]) for k, v in rt.items() if not k.startswith("_")}
-           for i in range(n_envs)]
+    keys = [k for k in rt if not k.startswith("_")]
+    out = []
+    for i in range(n_envs):
+        env_terms = {}
+        for k in keys:
+            mask = rt.get(f"_{k}")
+            if mask is None or mask[i]:
+                env_terms[k] = float(rt[k][i])
+        out.append(env_terms)
+    return out
 
 
 def _bootstrap_reward_done(reward, term, prev_done, value: torch.Tensor):

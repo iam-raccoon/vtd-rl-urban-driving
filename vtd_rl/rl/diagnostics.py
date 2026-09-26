@@ -119,6 +119,14 @@ class RewardTermTracker:
         self._done: dict = {k: deque(maxlen=self.window) for k in TERM_KEYS}
 
     def add(self, infos: dict):
+        """계약: `infos["reward_terms"]` 는 **환경별 dict 의 리스트**여야 한다(각 원소가
+
+        `{"progress": ..., "comfort": ...}` 처럼 그 환경 하나의 항목값들, 리셋 직후는 `{}`).
+        gymnasium 벡터 환경이 실제로 내는 `venv.step()` 의 `info["reward_terms"]`(dict 값을
+        전치해 `{항목명: 환경별 배열}` 로 만든 모양)는 이 계약과 **다르다** — 호출부는
+        `scripts/train_ppo.py` 의 `_reward_terms_per_env()` 로 그 모양을 이 계약대로
+        되돌린 뒤에 넘겨야 한다.
+        """
         terms = infos.get("reward_terms")
         if terms is None:
             return
