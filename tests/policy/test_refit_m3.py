@@ -196,3 +196,41 @@ def test_freeze_sigma가_log_std를_고정한다(tmp_path, base_run):
 
     frozen_summary = _run(tmp_path / "frozen", "--seed", "0", "--freeze-sigma")
     assert frozen_summary["log_std"] == pytest.approx([init, init])
+
+
+@pytest.mark.slow
+def test_init_뒤_log_std가_클램프된다(tmp_path):
+    """`--init` 체크포인트의 `log_std` 가 범위 밖이면 로드 직후 클램프돼야 한다.
+
+    실제 M3 체크포인트의 `log_std[0]` 은 -2.0024 로 지금 하한 밖이다(`actor_critic.py` 의
+    `from_policy()` 에 같은 사정이 적혀 있다). `train_epochs` 는 최적화 한 스텝 뒤마다 다시
+    클램프하므로(`train.py::train_epochs`), 학습이 실제로 도는 실행에서는 로드 직후 클램프를
+    지워도 **최종** 값만 보면 똑같이 통과한다(리뷰가 실측한 구멍이 정확히 이것 — 기존 7 개
+    테스트는 이 클램프를 지워도 전부 통과했다). 그래서 `--epochs 0` 으로 최적화 스텝을 아예 안
+    돌려, 요약에 실리는 `log_std` 가 로드 직후 클램프에만 좌우되게 만든다. `--data` 는 없는
+    경로를 줘도 된다 — `load_dir` 은 없는 폴더를 빈 조각 목록으로 보고(`glob.glob`),
+    `epochs=0` 이면 배치 루프가 아예 안 돌아 데이터 내용이 필요 없다(`test_init_trunk이_다르면_
+    거부한다` 와 같은 요령).
+    """
+    from vtd_rl.policy.net import DrivePolicy, PolicyConfig
+
+    cfg = PolicyConfig(squash=True)
+    init_path = tmp_path / "out_of_range.pt"
+    net = DrivePolicy(cfg)
+    with torch.no_grad():
+        # 하나는 하한 밖, 하나는 상한 밖 — 양쪽 다 확인한다
+        net.log_std.copy_(torch.tensor([cfg.log_std_min - 1.0, cfg.log_std_max + 1.0]))
+    net.save(str(init_path))
+
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    out = subprocess.run([os.path.join(REPO, ".venv", "bin", "python"),
+                          os.path.join(REPO, "scripts", "refit_m3.py"),
+                          "--data", str(tmp_path / "존재안함"),
+                          "--out", str(tmp_path / "inited" / "policy.pt"),
+                          "--epochs", "0", "--init", str(init_path)],
+                         capture_output=True, text=True, env=env, cwd=REPO, timeout=60)
+    assert out.returncode == 0, out.stderr[-3000:]
+    summary = json.loads(out.stdout.strip().splitlines()[-1])
+
+    assert summary["log_std"] == pytest.approx([cfg.log_std_min, cfg.log_std_max])

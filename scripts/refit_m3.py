@@ -73,7 +73,10 @@ def main():
     ap.add_argument("--freeze-sigma", action="store_true",
                     help="σ 를 초기값에 고정하고 평균만 적합한다. 스쿼시에서는 라벨이 atanh 로"
                          " 늘어나 잔차가 커지고, 학습되는 σ 가 그 잔차를 설명하려고 부풀면"
-                         " 평균의 기울기가 σ² 로 나뉘어 죽는다(NLL 죽음의 나선)")
+                         " 평균의 기울기가 σ² 로 나뉘어 죽는다(NLL 죽음의 나선) — 단"
+                         " 2026-09-26 실측: 이 가설로 얼려 본 두 실행 모두 완주율 0.000"
+                         "(점수만 99.3~99.4 로 높은데 이는 '깨끗하게 안 움직인 차' 라는 뜻이다,"
+                         " docs/reports/m4c-refit.md 1 차 표) — 쓰지 마라")
     ap.add_argument("--eval", action="store_true",
                     help="단계①②를 각각 평가해 요약 JSON 의 stages 에 넣는다")
     a = ap.parse_args()
