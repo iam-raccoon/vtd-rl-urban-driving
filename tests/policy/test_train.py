@@ -87,3 +87,24 @@ def test_시그마를_분리하면_log_std에_기울기가_안_간다():
 
 def test_시그마_분리_기본값은_학습이다():
     assert TrainConfig().sigma_grad is True
+
+
+def test_스쿼시_모방손실은_선생님_행동을_atanh_로_옮긴다():
+    torch.manual_seed(0)
+    net = DrivePolicy(PolicyConfig(trunk=(32, 32), squash=True))
+    batch = next(iter(toy_dataset(64).batches(32, generator=torch.Generator().manual_seed(0))))
+    loss, parts = policy_loss(net, batch, TrainConfig(squash=True))
+    assert torch.isfinite(loss) and parts["total"] == parts["total"]   # NaN 아님
+    # 스쿼시 손실을 줄이면 tanh(mean) 이 선생님 행동에 가까워진다
+    opt = torch.optim.Adam(net.parameters(), lr=0.05)
+    for _ in range(50):
+        l, _p = policy_loss(net, batch, TrainConfig(squash=True))
+        opt.zero_grad(set_to_none=True); l.backward(); opt.step(); net.clamp_log_std()
+    vec, objs, mask, control, _turn = batch
+    with torch.no_grad():
+        err = (torch.tanh(net(vec, objs, mask)[0]) - control).abs().mean()
+    assert float(err) < 0.3
+
+
+def test_스쿼시_기본값은_꺼짐():
+    assert TrainConfig().squash is False

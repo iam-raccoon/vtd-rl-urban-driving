@@ -3,6 +3,7 @@
 물체는 공유 MLP 를 거쳐 **마스크를 씌운 뒤 최댓값으로** 합친다. 개수·순서가 달라져도 결과가 같아야
 한다(스펙 §4.1). 머리 모양은 M4 의 PPO 가 그대로 쓴다 — 가우시안 평균·로그표준편차와 범주형 로짓.
 """
+import math
 from dataclasses import asdict, dataclass
 
 import numpy as np
@@ -15,6 +16,15 @@ from vtd_rl.policy.encode import OBJ_DIM, VEC_DIM, flatten_obs, to_tensors
 NEG_BIG = -1.0e9          # 마스크된 자리를 최댓값 합치기에서 제외하는 값
 
 
+def _tanh_log_det(raw):
+    """tanh 변환의 로그 야코비안 합 — `log(1 - tanh(u)^2)` 의 수치 안정형.
+
+    항등식: log(1 - tanh(u)^2) = 2*(log 2 - u - softplus(-2u)).
+    그대로 계산하면 |u| 가 조금만 커져도 1 - tanh(u)^2 이 0 으로 내려가 -inf 가 된다.
+    """
+    return (2.0 * (math.log(2.0) - raw - nn.functional.softplus(-2.0 * raw))).sum(dim=-1)
+
+
 @dataclass(frozen=True)
 class PolicyConfig:
     obj_hidden: int = 64
@@ -23,6 +33,9 @@ class PolicyConfig:
     log_std_init: float = -1.0
     log_std_min: float = -2.0       # 조향 표준편차가 무너져 가속 머리를 굶기지 않도록(σ≥0.135, ~8배 차이로 제한)
     log_std_max: float = 0.5        # 탐색 폭이 무한정 커지지 않도록
+    squash: bool = False            # True 면 tanh 로 행동을 상자 안에 가둔다(야코비안 보정 포함).
+                                     # 기본값 False — 평균이 상자를 벗어나도 clamp 가 탐색을 먹던
+                                     # 옛 동작을 그대로 유지해 M3·M4a·M4b 체크포인트가 그대로 읽힌다.
 
 
 class DrivePolicy(nn.Module):
@@ -76,16 +89,30 @@ class DrivePolicy(nn.Module):
         noise = torch.randn(normal.mean.shape, generator=generator).to(normal.mean.device)
         raw = normal.mean + noise * normal.stddev
         turn = torch.multinomial(cat.probs.cpu(), 1, generator=generator).squeeze(-1).to(raw.device)
-        log_prob = normal.log_prob(raw).sum(dim=-1) + cat.log_prob(turn)
-        entropy = normal.entropy().sum(dim=-1) + cat.entropy()
-        return {"raw": raw, "control": raw.clamp(-1.0, 1.0), "turn": turn,
+        if self.cfg.squash:
+            control = torch.tanh(raw)
+            gauss_lp = normal.log_prob(raw).sum(dim=-1) - _tanh_log_det(raw)
+            gauss_ent = -gauss_lp          # 스쿼시 분포는 닫힌 엔트로피가 없다(표본 1개 추정)
+        else:
+            control = raw.clamp(-1.0, 1.0)
+            gauss_lp = normal.log_prob(raw).sum(dim=-1)
+            gauss_ent = normal.entropy().sum(dim=-1)
+        log_prob = gauss_lp + cat.log_prob(turn)
+        entropy = gauss_ent + cat.entropy()
+        return {"raw": raw, "control": control, "turn": turn,
                 "log_prob": log_prob, "entropy": entropy, "value": None}
 
     def evaluate_actions(self, vec, objs, mask, raw, turn):
         """저장해 둔 원표본에 대한 현재 정책의 로그확률(PPO 비율 계산용)."""
         normal, cat = self._dists(vec, objs, mask)
-        log_prob = normal.log_prob(raw).sum(dim=-1) + cat.log_prob(turn)
-        entropy = normal.entropy().sum(dim=-1) + cat.entropy()
+        if self.cfg.squash:
+            gauss_lp = normal.log_prob(raw).sum(dim=-1) - _tanh_log_det(raw)
+            gauss_ent = -gauss_lp
+        else:
+            gauss_lp = normal.log_prob(raw).sum(dim=-1)
+            gauss_ent = normal.entropy().sum(dim=-1)
+        log_prob = gauss_lp + cat.log_prob(turn)
+        entropy = gauss_ent + cat.entropy()
         return log_prob, entropy
 
     @torch.no_grad()
@@ -93,7 +120,7 @@ class DrivePolicy(nn.Module):
         vec, objs, mask = to_tensors(*flatten_obs(obs), self.device)
         if deterministic:
             mean, _log_std, logits = self(vec, objs, mask)
-            control = mean[0]
+            control = torch.tanh(mean[0]) if self.cfg.squash else mean[0]
             turn = int(torch.argmax(logits[0]).item())
         else:
             # 표본 추출은 sample() 을 그대로 쓴다 — 내부에서 CPU 생성기를 CUDA 텐서에

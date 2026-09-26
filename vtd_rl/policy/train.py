@@ -10,6 +10,8 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
+from vtd_rl.policy.net import _tanh_log_det
+
 LOG_2PI = math.log(2.0 * math.pi)
 
 
@@ -22,6 +24,8 @@ class TrainConfig:
     grad_clip: float = 1.0
     seed: int = 0
     sigma_grad: bool = True         # False 면 NLL 을 log_std.detach() 로 계산한다(M4b: σ 만 푼다)
+    squash: bool = False            # True 면 선생님 행동을 atanh 로 옮겨 스쿼시 밀도로 배운다
+                                     # (net.py 의 squash=True 정책과 짝을 맞춘다). 기본값 False.
 
 
 def policy_loss(net, batch, cfg: TrainConfig):
@@ -32,8 +36,15 @@ def policy_loss(net, batch, cfg: TrainConfig):
     # 통째로 줄이면(run3) 평균까지 풀려 완주율이 0% 로 무너졌다 — 그래서 σ 만 뗀다.
     nll_log_std = log_std.detach() if not cfg.sigma_grad else log_std
     var = (2.0 * nll_log_std).exp()
-    nll = 0.5 * (((control - mean) ** 2) / var + 2.0 * nll_log_std + LOG_2PI)
-    control_loss = nll.sum(dim=-1).mean()
+    if cfg.squash:
+        # 선생님 행동은 상자 안 값이다. 스쿼시 매개화에서는 그 행동의 로그가능도가
+        # 가우시안 밀도(atanh 지점) 빼기 야코비안이다 — atanh 은 ±1 에서 발산하므로 잘라 준다.
+        target = torch.atanh(control.clamp(-1.0 + 1e-6, 1.0 - 1e-6))
+        jac = _tanh_log_det(target)          # 음수 — NLL 에 더한다
+    else:
+        target, jac = control, 0.0
+    nll = 0.5 * (((target - mean) ** 2) / var + 2.0 * nll_log_std + LOG_2PI)
+    control_loss = (nll.sum(dim=-1) + jac).mean()
     turn_loss = nn.functional.cross_entropy(logits, turn)
     total = control_loss + cfg.turn_weight * turn_loss
     return total, {"control": float(control_loss.item()), "turn": float(turn_loss.item()),
