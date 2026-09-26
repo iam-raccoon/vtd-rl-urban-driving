@@ -61,14 +61,19 @@ def imitation_coef(step: int, cfg: PPOConfig) -> float:
     return cfg.imitation_coef0 * 0.5 ** (step / max(cfg.imitation_half_life, 1))
 
 
-def ppo_losses(net, batch, cfg: PPOConfig):
+def ppo_losses(net, batch, cfg: PPOConfig, generator=None):
     """잘라낸 정책 손실 + 잘라낸 가치 손실 + 엔트로피 보너스.
 
     비율은 저장해 둔 **원표본**(`raw`)으로 계산한다 — 자른 값(`control`)으로 계산하면
     분포가 안 맞는다(`DrivePolicy.sample()`의 계약, 스펙 §6.3).
+
+    `generator` 는 `net.evaluate_actions()` 까지 그대로 흘려보낸다 — `entropy_mode="squashed"`
+    일 때 `DrivePolicy._gauss_entropy()` 가 그 안에서 새 표본을 뽑는다(`vtd_rl/policy/net.py`).
+    안 넘기면(기본값 `None`) 전역 RNG 를 타 같은 시드로도 실행마다 결과가 달라진다 — `update()`
+    가 이 값을 받아 그대로 전달한다.
     """
     vec, objs, mask, raw, turn, old_log_prob, adv, ret, old_value = batch
-    log_prob, entropy, value = net.evaluate_actions(vec, objs, mask, raw, turn)
+    log_prob, entropy, value = net.evaluate_actions(vec, objs, mask, raw, turn, generator=generator)
     ratio = (log_prob - old_log_prob).exp()
     unclipped = ratio * adv
     clipped = ratio.clamp(1.0 - cfg.clip, 1.0 + cfg.clip) * adv
@@ -120,7 +125,7 @@ def update(net, opt, buffer, dagger_iter, cfg: PPOConfig, step: int, generator=N
     for _epoch in range(cfg.epochs):
         stop = False
         for batch in buffer.batches(cfg.minibatch, generator=generator):
-            loss, parts = ppo_losses(net, batch, cfg)
+            loss, parts = ppo_losses(net, batch, cfg, generator=generator)
             parts["imitation"] = 0.0
             if dagger_iter is not None and coef > 1e-4:
                 dbatch = next(dagger_iter)

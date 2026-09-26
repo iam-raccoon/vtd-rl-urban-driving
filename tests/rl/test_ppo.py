@@ -44,7 +44,7 @@ class _StubNet:
         self.entropy = entropy if entropy is not None else torch.zeros(n)
         self.value = value if value is not None else torch.zeros(n)
 
-    def evaluate_actions(self, vec, objs, mask, raw, turn):
+    def evaluate_actions(self, vec, objs, mask, raw, turn, generator=None):
         return self.log_prob, self.entropy, self.value
 
 
@@ -225,12 +225,12 @@ def test_모방_시그마에_이상한_값을_주면_거부한다(small_ac):
         imitation_loss(net, batch, PPOConfig(imitation_sigma="아무거나"))
 
 
-def _squash_ac(squash=True):
+def _squash_ac(squash=True, entropy_mode="gaussian"):
     from vtd_rl.policy.net import PolicyConfig
     from vtd_rl.rl.actor_critic import ActorCritic, ActorCriticConfig
     torch.manual_seed(0)
     cfg = ActorCriticConfig(policy=PolicyConfig(obj_hidden=16, obj_out=16, trunk=(32, 32),
-                                                squash=squash),
+                                                squash=squash, entropy_mode=entropy_mode),
                             value_hidden=(32, 32), obj_hidden=16, obj_out=16)
     return ActorCritic(cfg)
 
@@ -262,3 +262,30 @@ def test_비스쿼시_정책의_모방손실은_예전과_같다():
     _loss, parts = imitation_loss(net, batch, PPOConfig())
     _ref, rparts = policy_loss(net.policy, batch, TrainConfig())
     assert parts["total"] == pytest.approx(rparts["total"], rel=1e-9)
+
+
+def test_squashed_엔트로피는_generator를_받아_전역RNG와_무관하게_재현된다():
+    """`entropy_mode="squashed"` 는 `_gauss_entropy()` 안에서 새 표본을 뽑는다 — `update()` 가
+
+    거기까지 `generator` 를 안 넘기면 전역 RNG 를 타 같은 시드로도 결과가 달라진다(이번
+    마일스톤에서 이 누락으로 실험 12 회를 통째로 버린 전례가 있다, `--init` 씨앗 문제와 같은
+    종류). 두 실행을 완전히 같게(같은 초기 가중치·같은 버퍼·같은 미니배치 순서) 만든 뒤, 오직
+    `update()` 호출 **직전** 전역 RNG 상태만 다르게 흔들어 본다 — `generator` 가 끝까지 먹히면
+    전역 RNG 가 무엇이든 결과가 같아야 하고, 안 먹히면(옛 버그) 갈린다.
+    """
+    def run(perturb_global: bool):
+        net = _squash_ac(squash=True, entropy_mode="squashed")
+        opt = torch.optim.Adam(net.parameters(), lr=1e-3)
+        buf = filled_buffer(net, n_steps=8, n_envs=4)
+        if perturb_global:
+            torch.rand(37)   # 이 세션의 다른 코드가 전역 RNG 를 다르게 태웠다고 흉내
+        it = dagger_batches(toy_dagger(), 32, generator=torch.Generator().manual_seed(0))
+        update(net, opt, buf, it, PPOConfig(epochs=2, minibatch=8), step=0,
+              generator=torch.Generator().manual_seed(123))
+        return net.policy.log_std.detach().clone(), [p.detach().clone() for p in net.parameters()]
+
+    ls_a, params_a = run(False)
+    ls_b, params_b = run(True)
+    assert torch.equal(ls_a, ls_b)
+    assert len(params_a) == len(params_b)
+    assert all(torch.equal(a, b) for a, b in zip(params_a, params_b))
