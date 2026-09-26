@@ -23,15 +23,67 @@ def short_board():
     return slice_board(load_board(H), 0.0, 250.0, "H_0_250")
 
 
+class _SpyPolicy:
+    """`act()` 가 어떤 `deterministic` 으로 불렸는지 받아 적는다."""
+
+    def __init__(self):
+        self.seen = []
+
+    def act(self, obs, deterministic=True, generator=None):
+        self.seen.append(deterministic)
+        return {"control": np.zeros(2, np.float32), "turn": 0}
+
+
+class _FakeEnv:
+    """`run_policy_episode` 가 쓰는 만큼만 흉내 낸다 — VTD 월드를 안 띄워 빠르다."""
+
+    def __init__(self, steps=3):
+        self.steps, self.n = steps, 0
+
+    def reset(self, seed=None, options=None):
+        self.n = 0
+        return {}, {}
+
+    def step(self, action):
+        self.n += 1
+        done = self.n >= self.steps
+        info = {"outcome": "goal", "result": {"score": [100.0], "sheet": []}} if done else {}
+        return {}, 0.0, done, False, info
+
+    def close(self):
+        pass
+
+
 def test_기본값은_그대로_결정적이다():
-    """`deterministic`을 안 주면 예전과 완전히 같은 호출부(기존 채점 경로 회귀 방지)."""
-    torch.manual_seed(0)
-    net = DrivePolicy(PolicyConfig(trunk=(32, 32)))
-    board = short_board()
-    env = VtdDriveEnv([board])
-    out = run_policy_episode(env, net, board.name, 0, max_steps=1000)
-    env.close()
-    assert out.outcome in ("goal", "offroad", "collision", "timeout", "stalled")
+    """**기본값이 `deterministic=True` 로 정책까지 닿는지**를 값으로 잠근다.
+
+    2026-09-27 재리뷰: 원래 이 테스트는 `outcome` 이 올바른 문자열인지만 봤다 —
+    `run_policy_episode`·`evaluate_policy` 의 기본값을 **둘 다 `False` 로 뒤집어도 스위트
+    457 개가 전부 통과**했다. 이름이 약속하는 것을 안 지키는 테스트는 없는 것보다 나쁘다.
+    이 경로는 M1 부터의 모든 성적표가 지나는 채점 경로라 기본값이 조용히 바뀌면 과거 성적표와의
+    비교가 통째로 무너진다.
+    """
+    spy = _SpyPolicy()
+    out = run_policy_episode(_FakeEnv(), spy, "판", 0, max_steps=10)
+    assert spy.seen and all(d is True for d in spy.seen), spy.seen
+    assert out.outcome == "goal"
+
+
+def test_evaluate_policy_도_기본값이_결정적이다(monkeypatch):
+    """`evaluate_policy` 가 그 기본값을 `run_policy_episode` 로 그대로 넘기는지 잠근다."""
+    import vtd_rl.policy.evaluate as ev
+
+    seen = []
+
+    def _spy_episode(env, policy, board_name, seed, max_steps=20000,
+                     deterministic=True, generator=None):
+        seen.append((deterministic, generator))
+        return ev.EpisodeOutcome(board_name, seed, "goal", 1, 0.0, 100.0, [])
+
+    monkeypatch.setattr(ev, "run_policy_episode", _spy_episode)
+    monkeypatch.setattr(ev, "VtdDriveEnv", lambda *a, **k: _FakeEnv())
+    ev.evaluate_policy(_SpyPolicy(), [short_board()], seeds=(0,))
+    assert seen == [(True, None)], seen
 
 
 def test_결정적과_확률적은_실제로_다른_행동을_낸다():
