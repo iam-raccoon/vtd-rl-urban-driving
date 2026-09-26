@@ -4,7 +4,8 @@ from gymnasium.utils.env_checker import check_env
 
 from vtd_rl import rule_stack as rs
 from vtd_rl.env.drive_env import EnvConfig, VtdDriveEnv
-from vtd_rl.world.board import load_board, slice_board
+from vtd_rl.env.reward import RewardConfig
+from vtd_rl.world.board import load_board, load_curriculum, slice_board
 
 H = {"name": "course_H", "route": "routes/HL_FMA_NEW_H.json", "lane": "routes/HL_FMA_NEW_H_lane.json"}
 
@@ -217,3 +218,43 @@ def test_없는_판_이름은_명확한_오류():
     with pytest.raises(ValueError):
         env.reset(seed=0, options={"board": "없는판"})
     env.close()
+
+
+def test_intent가_승차감에_닿는다():
+    boards = load_curriculum("curricula/stage1.json")[1]
+    env = VtdDriveEnv(boards, EnvConfig(reward=RewardConfig(comfort_on_intent=True)))
+    try:
+        env.intent = (0.0, 0.0)          # 의도는 내내 0
+        env.reset(seed=0, options={"board": boards[0].name})
+        big = {"control": np.array([1.0, 1.0], np.float32), "turn": 0}
+        _o, _r, _t, _tr, info = env.step(big)
+        assert abs(info["reward_terms"]["comfort"]) < 1e-9
+    finally:
+        env.close()
+
+
+@pytest.mark.slow
+def test_대회_점수는_보상_설정에_영향받지_않는다():
+    """보상을 바꿔도 `score_fma` 점수·위반은 그대로여야 한다 — 그게 이 실험이 성립하는 근거다.
+
+    보상은 학습 신호고 점수는 채점기가 따로 낸다. 이 독립성이 깨지면 M4c 의 성적표를
+    M4a·M4b 와 비교할 수 없다.
+    """
+    boards = load_curriculum("curricula/stage1.json")[1]
+    results = []
+    for cfg in (RewardConfig(),
+                RewardConfig(comfort_steer=-99.0, comfort_accel=-99.0, comfort_on_intent=True)):
+        env = VtdDriveEnv(boards, EnvConfig(reward=cfg))
+        try:
+            env.reset(seed=0, options={"board": boards[0].name})
+            info = None
+            for _ in range(20000):        # 판이 끝날 때까지 — 같은 행동이면 같은 궤적이다
+                _o, _r, term, trunc, info = env.step(
+                    {"control": np.array([0.05, 0.6], np.float32), "turn": 0})
+                if term or trunc:
+                    break
+            assert info is not None and "result" in info, "판이 안 끝났다"
+            results.append((info["result"]["score"], info["result"]["sheet"]))
+        finally:
+            env.close()
+    assert results[0] == results[1]

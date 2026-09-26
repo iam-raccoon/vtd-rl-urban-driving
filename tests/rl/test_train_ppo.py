@@ -7,6 +7,7 @@ import subprocess
 import pytest
 import torch
 
+from vtd_rl.env.reward import RewardConfig
 from vtd_rl.rl.actor_critic import ActorCritic
 from vtd_rl.rl.buffer import RolloutBuffer
 from vtd_rl.rl.ppo import PPOConfig
@@ -312,6 +313,75 @@ def test_연습_모드가_항목별_보상을_남긴다(tmp_path):
     assert done, "끝난 판이 한 번도 안 잡혔다"
     # 승차감은 벌점이므로 음수여야 한다 — 부호가 뒤집히면 배분 해석이 통째로 틀어진다
     assert done[-1]["term_comfort_mean"] <= 0.0
+    # M4c 행동 상자 진단 — tanh 는 `|control| ≤ 1` 을 자명하게 통과시키므로(리뷰 I3) 포화 비율과
+    # 스쿼시 전 평균 크기를 따로 잰다. 매 롤아웃(가벼운 진단 줄, 평가 줄 아님)마다 실려야 한다.
+    for r in rows:
+        for k in ("act_abs_mean", "act_sat_frac", "mean_abs_mean"):
+            assert k in r, k
+            assert r[k] is None or r[k] >= 0.0, (k, r[k])
+    with_values = [r for r in rows if r["act_abs_mean"] is not None]
+    assert with_values, "행동 상자 진단이 한 번도 안 찍혔다"
+    assert all(0.0 <= r["act_sat_frac"] <= 1.0 for r in with_values)
+
+
+def test_인자를_안_주면_RewardConfig_기본값과_같다():
+    """`--comfort-steer`/`--comfort-accel`/`--comfort-on-intent` 를 하나도 안 주면
+
+    `_build_reward_cfg` 가 만드는 `cfg` 는 `RewardConfig()` 와 완전히 같아야 한다 —
+    `test_인자를_안_주면_PPOConfig_기본값과_같다` 와 같은 취지(CLI 로 여는 것 자체가 기본
+    동작을 바꾸면 안 된다).
+    """
+    module = _load_train_ppo_module()
+    a = module._build_parser().parse_args(["--out", "/tmp/불필요-존재안함"])
+    cfg = module._build_reward_cfg(a)
+    assert cfg == RewardConfig()
+
+
+def test_승차감_인자가_RewardConfig에_반영된다():
+    module = _load_train_ppo_module()
+    a = module._build_parser().parse_args([
+        "--out", "/tmp/불필요-존재안함", "--comfort-steer", "-0.01",
+        "--comfort-accel", "-0.005", "--comfort-on-intent"])
+    cfg = module._build_reward_cfg(a)
+    assert cfg.comfort_steer == -0.01
+    assert cfg.comfort_accel == -0.005
+    assert cfg.comfort_on_intent is True
+    # 안 건드린 필드는 그대로(세 필드만 골라 바꿨다는 확인).
+    default_cfg = RewardConfig()
+    assert cfg.progress_total == default_cfg.progress_total
+    assert cfg.collision == default_cfg.collision
+
+    off = module._build_reward_cfg(module._build_parser().parse_args(["--out", "x"]))
+    assert off.comfort_on_intent is False
+
+
+@pytest.mark.slow
+def test_comfort_on_intent가_승차감의_표본_잡음을_줄인다(tmp_path):
+    """`--comfort-on-intent` 를 켜면 실행 행동이 아니라 정책의 의도(결정적 평균)의 변화로
+
+    승차감을 잰다 — PPO 가 매 걸음 뽑는 독립 표본(탐색 잡음)이 승차감에 덜 잡혀야 하므로
+    끈 실행보다 `|term_comfort_mean|` 이 작아야 한다(M4b 실측: 실행 행동 기준으로는 판당
+    -108.67). 이 배선은 `VtdDriveEnv.intent`(속성)를 거쳐 `venv.set_attr()` 로 별도 프로세스
+    (비동기 벡터 환경) 워커까지 실제로 닿아야 하므로, `set_attr` 호출이나 `RewardShaper` 의
+    의도 분기 중 하나라도 빠지면 이 테스트가 그 차이를 못 보고 실패해야 한다.
+    """
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+
+    def run(tag, extra):
+        out = subprocess.run([os.path.join(REPO, ".venv", "bin", "python"),
+                              os.path.join(REPO, "scripts", "train_ppo.py"),
+                              "--smoke", "--out", str(tmp_path / tag), "--seed", "0", *extra],
+                             capture_output=True, text=True, env=env, cwd=REPO, timeout=1800)
+        assert out.returncode == 0, out.stderr[-3000:]
+        rows = [json.loads(l) for l in open(tmp_path / tag / "log.jsonl", encoding="utf-8")]
+        done = [r for r in rows if r["term_n"] > 0]
+        assert done, "끝난 판이 한 번도 안 잡혔다"
+        return done[-1]["term_comfort_mean"]
+
+    off = run("off", [])
+    on = run("on", ["--comfort-on-intent"])
+    assert abs(on) < abs(off), (on, off)
 
 
 def test_시그마_모드가_cfg에_닿는다():

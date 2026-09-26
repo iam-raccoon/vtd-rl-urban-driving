@@ -34,6 +34,7 @@ import torch
 REPO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, REPO)
 from vtd_rl.env.drive_env import EnvConfig  # noqa: E402
+from vtd_rl.env.reward import RewardConfig  # noqa: E402
 from vtd_rl.eval.verdict import completed_only, judge, major_total  # noqa: E402
 from vtd_rl.policy import device as pick_device  # noqa: E402
 from vtd_rl.policy.dataset import load_dir  # noqa: E402
@@ -173,6 +174,7 @@ def _bootstrap_reward_done(reward, term, prev_done, value: torch.Tensor):
 
 def _build_parser() -> argparse.ArgumentParser:
     default_cfg = PPOConfig()   # 아래 네 개 CLI 기본값의 유일한 출처 — 숫자를 여기 따로 못박지 않는다.
+    default_reward_cfg = RewardConfig()   # 아래 세 개 승차감 CLI 기본값의 유일한 출처.
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     ap.add_argument("--init", default=None,
@@ -213,6 +215,19 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--smoke", action="store_true",
                     help="환경 2개·스텝 4000·롤아웃 64·동기 벡터 환경·평가는 각 단계 코스 A 한 판씩 시드 1개"
                          "·주기 평가 간격도 좁혀 로그 두 줄 이상을 남긴다")
+    # M4c — 승차감(RewardConfig.comfort_*)을 CLI 로 연다. 기본값은 RewardConfig() 자신의
+    # 기본값이라 아무 인자도 안 주면 지금 동작과 100% 같다(`_build_reward_cfg` 참고).
+    ap.add_argument("--comfort-steer", type=float, default=default_reward_cfg.comfort_steer,
+                    help="승차감(조향) 계수 — 음수, 클수록(더 음수) 급조작을 세게 벌한다")
+    ap.add_argument("--comfort-accel", type=float, default=default_reward_cfg.comfort_accel,
+                    help="승차감(가속) 계수")
+    ap.add_argument("--comfort-on-intent", action="store_true",
+                    help="승차감을 실행 행동이 아니라 정책의 의도(결정적 평균 — squash=True 면"
+                         " tanh(mean), 아니면 mean.clamp(-1,1))의 변화량으로 잰다. PPO 가 매 걸음"
+                         " 독립 표본을 뽑으므로 실행 행동 기준으로는 탐색 잡음이 승차감에 잡혀"
+                         " 정책이 탐색을 죽인다(M4b 실측, 판당 -108.67). 걸면 벡터 환경 워커마다"
+                         " `set_attr('intent', ...)` 를 매 걸음 보낸다 — 파이프 왕복이 늘어난다"
+                         "(비용은 --comfort-on-intent 를 켠 채·끈 채 짧은 실행으로 실측해라).")
     return ap
 
 
@@ -226,6 +241,17 @@ def _build_cfg(a) -> PPOConfig:
     return dataclasses.replace(PPOConfig(), lr=a.lr, entropy_coef=a.entropy_coef,
                                target_kl=a.target_kl, imitation_half_life=a.imitation_half_life,
                                imitation_sigma=a.imitation_sigma)
+
+
+def _build_reward_cfg(a) -> RewardConfig:
+    """`RewardConfig` 는 frozen dataclass 라 `dataclasses.replace` 로 CLI 로 연 세 필드만 덮어쓴다.
+
+    인자를 하나도 안 주면 `a.comfort_steer`/`a.comfort_accel`/`a.comfort_on_intent` 가 이미
+    `RewardConfig()` 자신의 기본값이므로(위 `_build_parser` 참고) 이 함수가 만드는 `cfg` 는
+    `RewardConfig()` 와 완전히 같다 — 기본 동작이 안 바뀐다(`_build_cfg` 와 같은 패턴).
+    """
+    return dataclasses.replace(RewardConfig(), comfort_steer=a.comfort_steer,
+                               comfort_accel=a.comfort_accel, comfort_on_intent=a.comfort_on_intent)
 
 
 def _build_optimizer(net, cfg: PPOConfig) -> torch.optim.Optimizer:
@@ -273,7 +299,9 @@ def main():
     # 크게 당겨 스모크 예산 안에서 반드시 최소 한 판은 끝나게 한다. 평가(`evaluate_policy`·
     # `evaluate_teacher`)는 이 값을 안 받고 각자 `EnvConfig()` 기본값을 새로 만들어 쓰므로,
     # 이 축소는 훈련 롤아웃에만 미치고 성적 판정(완주율·점수)에는 영향이 없다.
-    train_env_cfg = EnvConfig(world=WorldConfig(time_limit_scale=0.1)) if a.smoke else EnvConfig()
+    reward_cfg = _build_reward_cfg(a)
+    train_env_cfg = (EnvConfig(world=WorldConfig(time_limit_scale=0.1), reward=reward_cfg)
+                     if a.smoke else EnvConfig(reward=reward_cfg))
 
     cfg = _build_cfg(a)
     # 이번 실행에 쓴 하이퍼파라미터 — log.jsonl 각 줄과 요약 JSON 에 그대로 싣는다. 성적표가
@@ -312,11 +340,26 @@ def main():
         while step < a.steps:
             buf.reset()
             values_log, valid_log = [], []
+            # 행동 상자 진단 누적기 — 롤아웃마다 평균 내 `row` 에 싣는다(아래 `act_abs_mean` 등).
+            act_abs_sum, act_sat_count, act_count = 0.0, 0, 0
+            mean_abs_sum, mean_count = 0.0, 0
             for _ in range(a.rollout):
                 vec, objs, mask = (torch.as_tensor(x, device=dev) for x in vec_obs_to_arrays(obs))
                 with torch.no_grad():
                     out = net.act(vec, objs, mask, generator=gen)
                 action = {"control": out["control"].cpu().numpy(), "turn": out["turn"].cpu().numpy()}
+                if a.comfort_on_intent:
+                    # 의도 = 정책의 결정적 평균(스쿼시 전 `out["mean"]`, Task 3 의 squash 를
+                    # 따른다). 벡터 환경 워커는 별도 프로세스라 정책을 모른다 — 값은
+                    # `set_attr()` 로 프로세스 경계를 넘길 수 있지만 콜러블(람다)은 피클이
+                    # 안 되므로 `VtdDriveEnv.intent` 평범한 속성에 값만 내려보낸다
+                    # (`command_tags` 와 다른 점: 저건 워커 안에서 직접 건다). 이 호출은 워커마다
+                    # 파이프 왕복 + 동기 대기라 매 걸음 비용이 늘어난다 — `--comfort-on-intent`
+                    # 를 켠 채·끈 채 짧은 실행으로 `elapsed_s` 를 실측해라(M4c 보고서).
+                    squash = net.policy.cfg.squash
+                    intent_t = torch.tanh(out["mean"]) if squash else out["mean"].clamp(-1.0, 1.0)
+                    intent_np = intent_t.detach().cpu().numpy()
+                    venv.set_attr("intent", [(float(r[0]), float(r[1])) for r in intent_np])
                 obs, reward, term, trunc, info = venv.step(action)
                 # 자동 리셋 더미 행(prev_done)은 reward=제 가치·done=1 로 줘서 GAE 사슬을 끊는다
                 # (`_bootstrap_reward_done` 참고) — `done` 에 `term` 만 그대로 넣으면 truncated
@@ -329,6 +372,20 @@ def main():
                         valid=torch.as_tensor(valid_np, dtype=torch.float32))
                 values_log.append(out["value"].detach())
                 valid_log.append(torch.as_tensor(valid_np, dtype=torch.bool, device=dev))
+                # 행동 상자 진단 — tanh 스쿼시는 `|control| ≤ 1` 을 자명하게 통과시켜 그 검사만으론
+                # 아무것도 못 증명한다(리뷰 실측: 평균을 ±7 로 밀어도 100% 통과하지만 40.4% 가
+                # 정확히 ±1.0 이라 클램프와 다를 게 없다). 진짜 질문은 포화(`act_sat_frac`)와
+                # 스쿼시 전 평균이 상자를 벗어나는지(`mean_abs_mean`)다. 자동 리셋 더미 행
+                # (`valid_np`가 거짓인 자리)은 환경이 행동 자체를 무시하므로 `explained_variance`
+                # 와 같은 이유로 뺀다.
+                if valid_np.any():
+                    ctrl_valid = action["control"][valid_np]
+                    act_abs_sum += float(np.abs(ctrl_valid).sum())
+                    act_sat_count += int((np.abs(ctrl_valid) > 0.99).sum())
+                    act_count += ctrl_valid.size
+                    mean_valid = out["mean"].detach().cpu().numpy()[valid_np]
+                    mean_abs_sum += float(np.abs(mean_valid).sum())
+                    mean_count += mean_valid.size
                 done_mask = np.asarray(term) | np.asarray(trunc)
                 # PPO 가 실제로 최대화하는 확률적 롤아웃 리턴 — 결정적 평가 보상과 달리 한 번도
                 # 로깅된 적이 없었다(M4a 붕괴 원인 불명의 근본 원인, diagnostics.py 모듈 docstring).
@@ -370,13 +427,19 @@ def main():
             # `policy_drift()`(drift_l2/_rel/_log_std/_rest_rel)는 이름이 서로 겹치지 않고
             # `stats`(policy/value/entropy/approx_kl/clip_frac/imitation/imitation_coef/updates)
             # 와도 안 겹친다(M4a 에서 `**stats` 가 바깥 `updates` 를 조용히 덮어쓴 적이 있어
-            # 대조해 확인했다).
+            # 대조해 확인했다). `act_abs_mean`/`act_sat_frac`/`mean_abs_mean`(M4c 행동 상자 진단)도
+            # 위 다섯 그룹 어느 키와도 안 겹친다(대조 확인 완료).
+            act_abs_mean = (act_abs_sum / act_count) if act_count else None
+            act_sat_frac = (act_sat_count / act_count) if act_count else None
+            mean_abs_mean = (mean_abs_sum / mean_count) if mean_count else None
             row = {"step": step, "iter": updates, "elapsed_s": time.perf_counter() - t0,
                    **stats,
                    **tracker.stats(),
                    **terms.stats(),
                    **policy_drift(net, ref_state),
                    "explained_variance": ev_var if ev_var == ev_var else None,  # NaN → None(표준 JSON)
+                   "act_abs_mean": act_abs_mean, "act_sat_frac": act_sat_frac,
+                   "mean_abs_mean": mean_abs_mean,
                    "log_std": net.policy.log_std.detach().cpu().tolist(),
                    "hparams": hparams}
 

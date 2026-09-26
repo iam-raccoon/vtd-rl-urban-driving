@@ -56,6 +56,11 @@ class VtdDriveEnv(gym.Env):
         # 태그를 그대로 넘겨야 채점기 ⑧ 면책이 살아난다(TeacherPolicy 가 건다). 안 걸려 있으면
         # 세계의 물체에서 짓는다(env/tags.py) — 태그는 채점기가 어차피 면책할 정차만 면책한다.
         self.command_tags = None
+        # `command_tags` 와 같은 패턴 — 프레임 대신 걸음마다 정책의 의도(조향, 가속)를 준다.
+        # 값은 (조향, 가속) 튜플이거나 None(안 걸려 있으면 RewardShaper 는 실행 행동을 쓴다).
+        # 콜러블이 아니라 평범한 속성인 이유: 학습은 AsyncVectorEnv(별도 프로세스)를 쓰고,
+        # gymnasium 의 `set_attr()`은 값은 프로세스 경계를 넘겨주지만 람다는 피클이 안 된다.
+        self.intent = None
         self.board = self.world = self.referee = self.state = None
         self._worlds: dict = {}          # 판마다 세계를 다시 짓지 않는다(신호 찾기가 판당 수십 ms)
         self._episode = 0
@@ -128,7 +133,7 @@ class VtdDriveEnv(gym.Env):
         if outcome != RUNNING or any(h.item in COLLISION_ITEMS for h in hits):
             hits += self.referee.finish()          # 남은 대기 판정까지 이 걸음의 보상에 넣는다
         shaped = self._shaper.step(hits, max(0.0, self._info.s - s0), action, self._prev_action,
-                                   outcome)
+                                   outcome, intent=self.intent)
         self._prev_action = {"control": np.asarray(action["control"], dtype=np.float32).copy(),
                              "turn": int(action["turn"])}
         terminated = outcome in ("goal", "offroad") or shaped.collision

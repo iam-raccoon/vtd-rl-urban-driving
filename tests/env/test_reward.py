@@ -105,3 +105,47 @@ def test_항목15는_충돌이_아니라_위반():
     assert out.terms["collision"] == 0.0
     assert out.collision is False
     assert out.counted == 1
+
+
+def test_의도로_재면_표본_잡음이_승차감에_안_잡힌다():
+    sh = RewardShaper(h_board(), RewardConfig(comfort_on_intent=True))
+    sh.reset()
+    intent = (0.20, 0.10)                              # 의도는 두 걸음 내내 같다
+    a1 = {"control": [0.20, 0.10], "turn": 0}
+    a2 = {"control": [0.60, 0.50], "turn": 0}          # 표본이 크게 튀었다
+    sh.step([], 0.0, a1, a1, "running", intent=intent)
+    out = sh.step([], 0.0, a2, a1, "running", intent=intent)
+    assert out.terms["comfort"] == 0.0                 # 의도가 안 변했으니 0
+
+
+def test_의도가_변하면_그_변화량으로_잰다():
+    cfg = RewardConfig(comfort_on_intent=True)
+    sh = RewardShaper(h_board(), cfg)
+    sh.reset()
+    a = {"control": [0.0, 0.0], "turn": 0}             # 실행 행동은 내내 같다
+    sh.step([], 0.0, a, a, "running", intent=(0.0, 0.0))
+    out = sh.step([], 0.0, a, a, "running", intent=(0.5, -0.4))
+    assert out.terms["comfort"] == pytest.approx(cfg.comfort_steer * 0.5 + cfg.comfort_accel * 0.4)
+
+
+def test_의도를_안_주면_예전처럼_실행_행동으로_잰다():
+    cfg = RewardConfig()
+    sh = RewardShaper(h_board(), cfg)
+    sh.reset()
+    prev = {"control": [0.0, 0.0], "turn": 0}
+    now = {"control": [0.5, -0.4], "turn": 0}
+    out = sh.step([], 0.0, now, prev, "running")
+    assert out.terms["comfort"] == pytest.approx(cfg.comfort_steer * 0.5 + cfg.comfort_accel * 0.4)
+
+
+def test_승차감_계수를_바꿀_수_있다():
+    sh = RewardShaper(h_board(), RewardConfig(comfort_steer=-0.01, comfort_accel=-0.005))
+    sh.reset()
+    prev = {"control": [0.0, 0.0], "turn": 0}
+    now = {"control": [1.0, 1.0], "turn": 0}
+    out = sh.step([], 0.0, now, prev, "running")
+    assert out.terms["comfort"] == pytest.approx(-0.015)
+
+
+def test_comfort_on_intent_기본값은_꺼짐():
+    assert RewardConfig().comfort_on_intent is False

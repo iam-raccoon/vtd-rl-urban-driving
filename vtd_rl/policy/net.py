@@ -129,8 +129,11 @@ class DrivePolicy(nn.Module):
         gauss_ent = self._gauss_entropy(normal, generator=generator)
         log_prob = gauss_lp + cat.log_prob(turn)
         entropy = gauss_ent + cat.entropy()
+        # `mean` = 정책의 결정적 의도(스쿼시 전) — 이미 계산돼 있던 `normal.mean` 을 그대로
+        # 얹는다(추가 순전파 없음). M4c 의 `comfort_on_intent`·행동 상자 포화 진단이 쓴다
+        # (`scripts/train_ppo.py`) — `squash=True` 면 호출부가 `tanh(mean)` 을 취한다.
         return {"raw": raw, "control": control, "turn": turn,
-                "log_prob": log_prob, "entropy": entropy, "value": None}
+                "log_prob": log_prob, "entropy": entropy, "value": None, "mean": normal.mean}
 
     def evaluate_actions(self, vec, objs, mask, raw, turn, generator=None):
         """저장해 둔 원표본에 대한 현재 정책의 로그확률(PPO 비율 계산용).
