@@ -41,7 +41,8 @@ from vtd_rl.policy.evaluate import evaluate_policy, evaluate_teacher, violation_
 from vtd_rl.policy.train import TrainConfig  # noqa: E402
 from vtd_rl.rl.actor_critic import ActorCritic  # noqa: E402
 from vtd_rl.rl.buffer import RolloutBuffer  # noqa: E402
-from vtd_rl.rl.diagnostics import OutcomeCounter, ReturnTracker, policy_drift, snapshot_policy  # noqa: E402
+from vtd_rl.rl.diagnostics import (OutcomeCounter, ReturnTracker, RewardTermTracker,  # noqa: E402
+                                   policy_drift, snapshot_policy)
 from vtd_rl.rl.ppo import PPOConfig, dagger_batches, update  # noqa: E402
 from vtd_rl.rl.vec_env import make_vec_env, vec_obs_to_arrays  # noqa: E402
 from vtd_rl.world.board import load_curriculum  # noqa: E402
@@ -110,6 +111,23 @@ def _explained_variance(returns: torch.Tensor, values: torch.Tensor) -> float:
     if var_y < 1e-8:
         return float("nan")
     return 1.0 - float((returns - values).var()) / var_y
+
+
+def _reward_terms_per_env(info: dict, n_envs: int) -> list:
+    """`venv.step()` 의 `info["reward_terms"]` 를 `RewardTermTracker.add()` 의 계약
+
+    (환경별 dict 리스트)에 맞춰 되돌린다.
+
+    gymnasium 의 정보 벡터화(`VectorEnv._add_info`)는 값이 dict 면 재귀적으로 파고들어
+    `{항목명: 환경별 배열}` 로 만든다 — `outcome`(문자열)처럼 단순 값이 내는 "환경 수만큼의
+    배열"과 달리, `reward_terms`(dict) 는 이렇게 **전치된** 모양으로 나온다(2026-09-26 실측:
+    판이 실제로 끝나는 스텝에서도 이 모양이다 — 브리프의 "환경 수만큼의 dict 배열" 가정과
+    다르다). 모든 환경이 리셋 직후(빈 dict)면 gymnasium 이 재귀할 것이 없어 `{}` 그대로
+    나온다. `_` 로 시작하는 마스크 키(`_progress` 등)는 항목이 아니므로 걸러낸다.
+    """
+    rt = info.get("reward_terms") or {}
+    return [{k: float(v[i]) for k, v in rt.items() if not k.startswith("_")}
+           for i in range(n_envs)]
 
 
 def _bootstrap_reward_done(reward, term, prev_done, value: torch.Tensor):
@@ -269,6 +287,9 @@ def main():
         # window=30 이면 한 줄이 최근 롤아웃 약 12개 분량의 이동평균이 된다(2026-09-21 설계).
         # `reset()` 은 부르지 않는다 — 누적은 실행 내내 이어간다.
         tracker = ReturnTracker(a.envs, window=30)
+        # M4b 의 "승차감 −128 대 위반 −96" 은 계산이지 측정이 아니다 — info["reward_terms"] 가
+        # 걸음마다 이미 있는데 한 번도 로깅된 적이 없다. tracker 와 같은 이동창(30)을 쓴다.
+        terms = RewardTermTracker(a.envs, window=30)
         outcomes = OutcomeCounter()   # 평가 구간마다(로그 한 줄마다) 새로 만든다
 
         while step < a.steps:
@@ -295,6 +316,11 @@ def main():
                 # PPO 가 실제로 최대화하는 확률적 롤아웃 리턴 — 결정적 평가 보상과 달리 한 번도
                 # 로깅된 적이 없었다(M4a 붕괴 원인 불명의 근본 원인, diagnostics.py 모듈 docstring).
                 tracker.add(reward, done_mask)
+                # 항목별 보상(진행·시간·위반·승차감) 누적 — gymnasium 이 reward_terms(dict)를
+                # {항목명: 환경별 배열} 로 전치해 내므로 _reward_terms_per_env 로 되돌린다
+                # (RewardTermTracker.add() 계약은 환경별 dict 리스트, 리셋 직후는 빈 dict).
+                terms.add({"reward_terms": _reward_terms_per_env(info, a.envs)})
+                terms.add_done(done_mask)
                 # 종료 사유 집계 — `outcome` 은 "running" 이 아닌 스텝(그 판이 실제로 끝난
                 # 스텝)에만 실린다(OutcomeCounter 가 스스로 거른다).
                 outcomes.add(info)
@@ -323,6 +349,7 @@ def main():
             # `stats["updates"]` 는 이 롤아웃 안에서 도른 미니배치 최적화 걸음 수(ppo.update() 자체
             # 반환값)다 — 바깥 루프 반복 횟수(우리 `updates` 변수)와 이름이 겹치므로 `iter` 로 적는다.
             # `tracker.stats()`(rollout_return_mean/_n·rollout_len_mean)와
+            # `terms.stats()`(term_progress_mean/_time_mean/_violation_mean/_comfort_mean/_n)와
             # `policy_drift()`(drift_l2/_rel/_log_std/_rest_rel)는 이름이 서로 겹치지 않고
             # `stats`(policy/value/entropy/approx_kl/clip_frac/imitation/imitation_coef/updates)
             # 와도 안 겹친다(M4a 에서 `**stats` 가 바깥 `updates` 를 조용히 덮어쓴 적이 있어
@@ -330,6 +357,7 @@ def main():
             row = {"step": step, "iter": updates, "elapsed_s": time.perf_counter() - t0,
                    **stats,
                    **tracker.stats(),
+                   **terms.stats(),
                    **policy_drift(net, ref_state),
                    "explained_variance": ev_var if ev_var == ev_var else None,  # NaN → None(표준 JSON)
                    "log_std": net.policy.log_std.detach().cpu().tolist(),

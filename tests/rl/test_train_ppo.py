@@ -214,6 +214,53 @@ def test_중대_집계가_완주_판만_센다():
     assert mod._major_totals({"stage1": ev}) == {"stage1": 1}   # 2 면 completed_only 가 빠진 것
 
 
+def test_reward_terms_를_환경별_리스트로_바꾼다():
+    """gymnasium 의 정보 벡터화(`VectorEnv._add_info`)는 값이 dict 면 재귀적으로 파고들어
+
+    {항목명: 환경별 배열} 로 만든다 — 브리프가 가정한 "환경 수만큼의 dict 배열"과 정반대
+    모양이다(2026-09-26 실측: 판이 실제로 끝나는 스텝에서도 `info["reward_terms"]` 는
+    이 전치된 모양으로 나온다). `_reward_terms_per_env` 가 `RewardTermTracker.add()` 의
+    계약(환경별 dict 리스트)에 맞춰 되돌린다. `_` 로 시작하는 마스크 키는 걸러낸다.
+    """
+    import numpy as np
+    mod = _load_train_ppo_module()
+    info = {"reward_terms": {"progress": np.array([1.0, 2.0]),
+                             "_progress": np.array([True, True]),
+                             "comfort": np.array([-0.5, -0.1])}}
+    out = mod._reward_terms_per_env(info, 2)
+    assert out == [{"progress": 1.0, "comfort": -0.5}, {"progress": 2.0, "comfort": -0.1}]
+
+
+def test_reward_terms가_비어있으면_환경_수만큼_빈_dict를_낸다():
+    """리셋 직후(모든 환경이 빈 dict)면 gymnasium 이 재귀할 것이 없어 `{}` 그대로 나온다
+
+    (`VtdDriveEnv.reset()`/`_frozen_step()` 이 내는 모양) — `reward_terms` 키 자체가
+    없을 때도 같이 견뎌야 한다.
+    """
+    mod = _load_train_ppo_module()
+    assert mod._reward_terms_per_env({"reward_terms": {}}, 2) == [{}, {}]
+    assert mod._reward_terms_per_env({}, 2) == [{}, {}]
+
+
+@pytest.mark.slow
+def test_연습_모드가_항목별_보상을_남긴다(tmp_path):
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    out = subprocess.run([os.path.join(REPO, ".venv", "bin", "python"),
+                          os.path.join(REPO, "scripts", "train_ppo.py"),
+                          "--smoke", "--out", str(tmp_path / "run"), "--seed", "0"],
+                         capture_output=True, text=True, env=env, cwd=REPO, timeout=1800)
+    assert out.returncode == 0, out.stderr[-3000:]
+    rows = [json.loads(l) for l in open(tmp_path / "run" / "log.jsonl", encoding="utf-8")]
+    for r in rows:
+        for k in ("term_progress_mean", "term_violation_mean", "term_comfort_mean", "term_n"):
+            assert k in r, k
+    done = [r for r in rows if r["term_n"] > 0]
+    assert done, "끝난 판이 한 번도 안 잡혔다"
+    # 승차감은 벌점이므로 음수여야 한다 — 부호가 뒤집히면 배분 해석이 통째로 틀어진다
+    assert done[-1]["term_comfort_mean"] <= 0.0
+
+
 def test_시그마_모드가_cfg에_닿는다():
     mod = _load_train_ppo_module()   # 이 파일이 이미 쓰는 importlib 헬퍼(이름 그대로)
     a = mod._build_parser().parse_args(["--out", "x", "--imitation-sigma", "detach"])

@@ -130,3 +130,55 @@ def test_실사이즈에서_drift_rel은_log_std_붕괴를_묻고_drift_log_std�
     own_rel = expected_log_std_l2 / own_ref_l2       # = 1.5 (150% 이동)
     assert d["drift_rel"] < own_rel / 5
     assert d["drift_log_std"] > 2.0                  # 절대량은 묻히지 않는다
+
+
+def test_항목별_보상을_판마다_누적한다():
+    from vtd_rl.rl.diagnostics import RewardTermTracker
+    t = RewardTermTracker(2)
+    t.add({"reward_terms": [{"progress": 1.0, "comfort": -0.5, "violation": 0.0},
+                            {"progress": 2.0, "comfort": -0.1, "violation": -3.0}]})
+    t.add_done(np.array([False, False]))
+    t.add({"reward_terms": [{"progress": 1.0, "comfort": -0.5, "violation": -6.0},
+                            {"progress": 2.0, "comfort": -0.1, "violation": 0.0}]})
+    t.add_done(np.array([True, False]))
+    s = t.stats()
+    assert s["term_n"] == 1
+    assert abs(s["term_progress_mean"] - 2.0) < 1e-9      # 0번 환경: 1+1
+    assert abs(s["term_comfort_mean"] - (-1.0)) < 1e-9    # -0.5 + -0.5
+    assert abs(s["term_violation_mean"] - (-6.0)) < 1e-9
+
+
+def test_끝난_판이_없으면_None():
+    from vtd_rl.rl.diagnostics import RewardTermTracker
+    t = RewardTermTracker(1)
+    t.add({"reward_terms": [{"progress": 1.0}]})
+    t.add_done(np.array([False]))
+    s = t.stats()
+    assert s["term_n"] == 0 and s["term_progress_mean"] is None
+
+
+def test_리셋_직후_빈_reward_terms_를_견딘다():
+    from vtd_rl.rl.diagnostics import RewardTermTracker
+    t = RewardTermTracker(1)
+    t.add({"reward_terms": [{}]})          # VtdDriveEnv.reset() 이 내는 모양
+    t.add({"reward_terms": [{"progress": 3.0}]})
+    t.add_done(np.array([True]))
+    assert abs(t.stats()["term_progress_mean"] - 3.0) < 1e-9
+
+
+def test_reward_terms_키가_없으면_아무것도_안_센다():
+    from vtd_rl.rl.diagnostics import RewardTermTracker
+    t = RewardTermTracker(1)
+    t.add({})
+    t.add_done(np.array([True]))
+    assert t.stats()["term_n"] == 1 and t.stats()["term_progress_mean"] == 0.0
+
+
+def test_이동창이_최근_것만_남긴다():
+    from vtd_rl.rl.diagnostics import RewardTermTracker
+    t = RewardTermTracker(1, window=2)
+    for v in (1.0, 2.0, 3.0):
+        t.add({"reward_terms": [{"progress": v}]})
+        t.add_done(np.array([True]))
+    assert t.stats()["term_n"] == 2
+    assert abs(t.stats()["term_progress_mean"] - 2.5) < 1e-9   # (2+3)/2

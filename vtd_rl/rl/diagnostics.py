@@ -94,6 +94,55 @@ class OutcomeCounter:
         return dict(self._counts)
 
 
+# 판당 누적을 볼 항목 — `VtdDriveEnv` 가 info["reward_terms"] 로 내는 키들 중
+# 배분 논쟁에 필요한 것만 고른다(collision·offroad·goal 은 종료 사유로 이미 보인다).
+TERM_KEYS = ("progress", "time", "violation", "comfort")
+
+
+class RewardTermTracker:
+    """판 하나가 쌓는 **항목별** 보상을 누적한다.
+
+    M4b 는 "승차감 −128 대 위반 −96" 을 **계산**으로만 말했다 — `info["reward_terms"]` 가
+    걸음마다 이미 있는데 한 번도 안 썼기 때문이다. 이 누적기가 그 배분을 측정으로 바꾼다.
+
+    `ReturnTracker` 와 달리 `add(infos)` 와 `add_done(done)` 이 나뉘어 있다 — 보상 항목은
+    `infos` 에서, 종료는 `term|trunc` 에서 오기 때문이다. 호출부는 매 걸음 둘 다 부른다.
+    """
+
+    def __init__(self, n_envs: int, window: int | None = None):
+        self.n_envs = n_envs
+        self.window = window
+        self._running = {k: np.zeros(n_envs, dtype=np.float64) for k in TERM_KEYS}
+        self.reset()
+
+    def reset(self):
+        self._done: dict = {k: deque(maxlen=self.window) for k in TERM_KEYS}
+
+    def add(self, infos: dict):
+        terms = infos.get("reward_terms")
+        if terms is None:
+            return
+        for i, t in enumerate(terms):
+            if not t:                      # 리셋 직후는 빈 dict 다
+                continue
+            for k in TERM_KEYS:
+                self._running[k][i] += float(t.get(k, 0.0))
+
+    def add_done(self, done):
+        for i in np.nonzero(np.asarray(done, dtype=bool))[0]:
+            for k in TERM_KEYS:
+                self._done[k].append(float(self._running[k][i]))
+                self._running[k][i] = 0.0
+
+    def stats(self) -> dict:
+        n = len(self._done[TERM_KEYS[0]])
+        out = {"term_n": n}
+        for k in TERM_KEYS:
+            vals = self._done[k]
+            out[f"term_{k}_mean"] = (sum(vals) / n) if n else None
+        return out
+
+
 def snapshot_policy(net) -> dict:
     """정책 파라미터를 떼어 복사한다 — clone 을 빼면 이후 갱신이 기준까지 따라 움직인다."""
     return {k: v.detach().clone() for k, v in net.policy.state_dict().items()}
