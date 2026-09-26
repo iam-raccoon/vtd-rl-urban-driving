@@ -51,7 +51,13 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 
 ## 강화학습(PPO)
 `vtd_rl/rl` 은 M3 모방학습 학생을 출발점으로 PPO 를 돌린다. 보상은 온라인 심판의 감점이고,
-단계 ①(항상 초록)과 ②(신호 주기) 판을 섞어 학습한다. 결과: [docs/reports/m4a-ppo.md](docs/reports/m4a-ppo.md)
+단계 ①(항상 초록)과 ②(신호 주기) 판을 섞어 학습한다.
+
+- [docs/reports/m4a-ppo.md](docs/reports/m4a-ppo.md) — PPO 첫 실행
+- [docs/reports/m4b-ppo.md](docs/reports/m4b-ppo.md) — 왜 출발점을 못 넘는지 진단(승차감이 탐색을 벌한다)
+- [docs/reports/m4c-split.md](docs/reports/m4c-split.md) — 판당 항목별 보상 실측(승차감 대 위반 배분)
+- [docs/reports/m4c-refit.md](docs/reports/m4c-refit.md) — 학생을 tanh 스쿼시 매개화로 재적합
+- [docs/reports/m4c-ppo.md](docs/reports/m4c-ppo.md) — 행동 상자를 닫고 승차감을 의도로 잰 뒤의 결과
 
     env -u PYTHONPATH .venv/bin/python scripts/train_ppo.py --out runs/$(hostname)/$(date +%F)-ppo \
       --init <M3 체크포인트> --dagger-data <M3 데이터 폴더>
