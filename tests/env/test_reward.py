@@ -149,3 +149,19 @@ def test_승차감_계수를_바꿀_수_있다():
 
 def test_comfort_on_intent_기본값은_꺼짐():
     assert RewardConfig().comfort_on_intent is False
+
+
+def test_콜드스타트_판_첫_걸음은_변화량이_0이다():
+    """`comfort_on_intent=True` 인데 직전 의도가 없는 판 첫 걸음 — 변화량을 0 으로 봐야 한다.
+
+    M4c 최종 리뷰 Important: 이 자리(`prev_intent = ... if ... is not None else intent`)를
+    `(0, 0)` 으로 대체하는 돌연변이가 살아남았다 — 값으로는 -0.0 대 -0.11 이라 동치가 아닌데도
+    구조적 검사(`== 0.0`이 부동소수 -0.0 과도 같게 비교돼)만으로는 못 갈렸다. 여기서는 의도가
+    (0.8, 0.6) 처럼 원점에서 뚜렷이 떨어진 값일 때를 골라 `(0, 0)` 폴백과 확실히 갈리게 한다
+    — `(0,0)` 이면 d_steer=0.8·d_accel=0.6 이 되어 comfort = -0.10*0.8 + -0.05*0.6 = -0.11.
+    """
+    sh = RewardShaper(h_board(), RewardConfig(comfort_on_intent=True))
+    sh.reset()
+    a = {"control": [0.8, 0.6], "turn": 0}     # 실행 행동도 크게 줘 실행-행동 폴백과도 갈린다
+    out = sh.step([], 0.0, a, a, "running", intent=(0.8, 0.6))
+    assert out.terms["comfort"] == pytest.approx(0.0)
