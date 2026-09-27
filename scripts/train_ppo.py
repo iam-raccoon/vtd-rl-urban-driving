@@ -258,6 +258,10 @@ def _build_parser() -> argparse.ArgumentParser:
                          " 정책이 탐색을 죽인다(M4b 실측, 판당 -108.67). 걸면 벡터 환경 워커마다"
                          " `set_attr('intent', ...)` 를 매 걸음 보낸다 — 파이프 왕복이 늘어난다"
                          "(비용은 --comfort-on-intent 를 켠 채·끈 채 짧은 실행으로 실측해라).")
+    ap.add_argument("--violation-mode", choices=("repeat", "once_per_section"),
+                    default=default_reward_cfg.violation_mode,
+                    help="위반을 세는 규칙. once_per_section 은 대회 채점기와 같다"
+                         "((항목,구간)마다 한 번, 심화는 차액만)")
     return ap
 
 
@@ -281,7 +285,8 @@ def _build_reward_cfg(a) -> RewardConfig:
     `RewardConfig()` 와 완전히 같다 — 기본 동작이 안 바뀐다(`_build_cfg` 와 같은 패턴).
     """
     return dataclasses.replace(RewardConfig(), comfort_steer=a.comfort_steer,
-                               comfort_accel=a.comfort_accel, comfort_on_intent=a.comfort_on_intent)
+                               comfort_accel=a.comfort_accel, comfort_on_intent=a.comfort_on_intent,
+                               violation_mode=a.violation_mode)
 
 
 def _build_optimizer(net, cfg: PPOConfig) -> torch.optim.Optimizer:

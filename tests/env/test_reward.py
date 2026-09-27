@@ -151,6 +151,64 @@ def test_comfort_on_intent_기본값은_꺼짐():
     assert RewardConfig().comfort_on_intent is False
 
 
+def test_구간당_한_번_모드는_같은_항목을_한_번만_센다():
+    tr = ViolationTracker(1.0, violation_mode="once_per_section")
+    hits = [Hit(t=k * 0.05, sec=0, item=1, level="minor") for k in range(200)]   # 10 초 연속
+    counted = [h for k in range(200) for h in tr.count([hits[k]])]
+    assert [round(h.t, 2) for h in counted] == [0.0]      # repeat 모드였다면 10 개다
+
+
+def test_구간이_바뀌면_다시_센다():
+    tr = ViolationTracker(1.0, violation_mode="once_per_section")
+    counted = tr.count([Hit(0.0, 0, 1, "minor"), Hit(0.1, 1, 1, "minor"), Hit(0.2, 0, 1, "minor")])
+    assert [(h.sec, h.t) for h in counted] == [(0, 0.0), (1, 0.1)]
+
+
+def test_심화되면_차액만_깎는다():
+    """경미를 깎은 뒤 중대가 오면 채점기처럼 차액만 더 깎는다(score_fma.Sheet 와 같은 규칙)."""
+    cfg = RewardConfig(violation_mode="once_per_section")
+    tr = ViolationTracker(cfg.repeat_gap, violation_mode=cfg.violation_mode)
+    _c1, p1 = tr.charge([Hit(0.0, 0, 1, "minor")], cfg.minor, cfg.major)
+    _c2, p2 = tr.charge([Hit(1.0, 0, 1, "major")], cfg.minor, cfg.major)
+    _c3, p3 = tr.charge([Hit(2.0, 0, 1, "minor")], cfg.minor, cfg.major)   # 중대 뒤 경미는 무시
+    assert p1 == pytest.approx(cfg.minor)
+    assert p2 == pytest.approx(cfg.major - cfg.minor)
+    assert p3 == pytest.approx(0.0)
+    assert p1 + p2 == pytest.approx(cfg.major)        # 합치면 중대 한 번과 같다
+
+
+def test_repeat_모드가_기본값이고_예전과_같다():
+    assert RewardConfig().violation_mode == "repeat"
+    tr = ViolationTracker(1.0)
+    hits = [Hit(t=k * 0.05, sec=0, item=1, level="minor") for k in range(60)]
+    counted = [h for k in range(60) for h in tr.count([hits[k]])]
+    assert [round(h.t, 2) for h in counted] == [0.0, 1.0, 2.0]     # 기존 테스트와 같은 값
+
+
+def test_구간당_한_번_모드의_판당_위반이_훨씬_작다():
+    """같은 히트 열을 두 모드에 먹여 크기 차이를 값으로 잠근다 — 이 마일스톤의 전제다."""
+    hits = [Hit(t=k * 0.05, sec=0, item=1, level="minor") for k in range(200)]
+    zero = {"control": [0.0, 0.0], "turn": 0}
+    base = RewardConfig()
+    totals = {}
+    for mode in ("repeat", "once_per_section"):
+        sh = RewardShaper(h_board(), RewardConfig(violation_mode=mode))
+        sh.reset()
+        totals[mode] = sum(sh.step([h], 0.0, zero, zero, "running").terms["violation"]
+                           for h in hits)
+    assert totals["once_per_section"] == pytest.approx(base.minor)
+    assert totals["repeat"] < totals["once_per_section"]        # 더 많이(음수로 크게) 깎는다
+    assert totals["repeat"] == pytest.approx(base.minor * 10)   # 10 초 / repeat_gap 1 초
+
+
+def test_reset하면_구간_기록이_지워진다():
+    tr = ViolationTracker(1.0, violation_mode="once_per_section")
+    assert tr.count([Hit(0.0, 0, 1, "minor")])
+    assert not tr.count([Hit(1.0, 0, 1, "minor")])
+    tr.reset()
+    assert tr.count([Hit(2.0, 0, 1, "minor")])      # 새 판이면 다시 센다
+
+
 def test_콜드스타트_판_첫_걸음은_변화량이_0이다():
     """`comfort_on_intent=True` 인데 직전 의도가 없는 판 첫 걸음 — 변화량을 0 으로 봐야 한다.
 
