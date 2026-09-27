@@ -79,8 +79,13 @@ def _public(ev: dict) -> dict:
     return {k: ev[k] for k in PUBLIC_KEYS}
 
 
-def _evaluate_stages(policy, stages, seeds) -> dict:
-    return {label: evaluate_policy(policy, boards, seeds=seeds) for label, boards in stages}
+def _evaluate_stages(policy, stages, seeds, env_cfg) -> dict:
+    """평가에도 **실행의 보상 설정**을 쓴다 — 안 그러면 성적표의 '평균 보상' 이 학습
+
+    목적함수와 다른 자가 된다(M4c 최종 리뷰 I6). 점수·완주율은 심판이 따로 내므로 영향 없다.
+    """
+    return {label: evaluate_policy(policy, boards, seeds=seeds, config=env_cfg)
+            for label, boards in stages}
 
 
 def _major_totals(evs: dict) -> dict:
@@ -482,7 +487,7 @@ def main():
 
             if step >= next_eval or step >= a.steps:
                 net.eval()
-                evs = _evaluate_stages(net.policy, stages, tuple(range(a.eval_seeds)))
+                evs = _evaluate_stages(net.policy, stages, tuple(range(a.eval_seeds)), train_env_cfg)
                 net.train()
                 # 평가 줄에만 그 구간의 종료 사유 집계를 더 싣는다 — `outcomes.stats()` 는 매
                 # 키가 `outcome_` 로 시작해 위 dict 들과 안 겹친다. 단계 결과는 "stages" 하위에
@@ -510,11 +515,11 @@ def main():
     # 선정하고 요약 JSON 을 채운다(주기 평가는 --eval-seeds 로 값싸게, 최종 선정만 신뢰도 있게).
     net.eval()
     final_seeds = tuple(range(a.final_eval_seeds))
-    final_evs = _evaluate_stages(net.policy, stages, final_seeds)
+    final_evs = _evaluate_stages(net.policy, stages, final_seeds, train_env_cfg)
     if best_step is not None and best_step != step:
         cand = ActorCritic.load(os.path.join(a.out, f"ac-{best_step}.pt"), device=dev)
         cand.eval()
-        cand_evs = _evaluate_stages(cand.policy, stages, final_seeds)
+        cand_evs = _evaluate_stages(cand.policy, stages, final_seeds, train_env_cfg)
         if _metric(cand_evs) > _metric(final_evs):
             cand.save(os.path.join(a.out, "ac-best.pt"))
             chosen_evs, chosen_step = cand_evs, best_step

@@ -531,6 +531,24 @@ def test_entropy_mode_덮어쓰기가_init_체크포인트_경로에도_먹는�
     assert out.cfg.policy.entropy_mode == "squashed"
 
 
+def test_평가가_실행의_보상_설정을_받는다(monkeypatch):
+    """`_evaluate_stages` 가 받은 `env_cfg` 를 `evaluate_policy` 로 그대로 넘기는지 값으로 잠근다.
+
+    M4c 최종 리뷰 I6: 여태 `evaluate_policy` 가 `EnvConfig()` 기본값으로 돌아 성적표의
+    '평균 보상' 이 학습 목적함수와 다른 자였다. 작업 2 가 보상을 바꾸면 이 어긋남이
+    측정을 통째로 무의미하게 만든다.
+    """
+    mod = _load_train_ppo_module()
+    seen = []
+    monkeypatch.setattr(mod, "evaluate_policy",
+                        lambda policy, boards, seeds=None, config=None: seen.append(config) or {})
+    from vtd_rl.env.drive_env import EnvConfig
+    from vtd_rl.env.reward import RewardConfig
+    cfg = EnvConfig(reward=RewardConfig(comfort_steer=-0.01))
+    mod._evaluate_stages(object(), [("stage1", [])], (0,), cfg)
+    assert seen == [cfg], seen
+
+
 @pytest.mark.slow
 def test_entropy_mode_스모크_실행에서_학습_정책까지_실제로_닿는다(tmp_path):
     """단위 테스트(위 세 개)는 `_apply_entropy_mode` 자체를 직접 부르지만, `main()` 이

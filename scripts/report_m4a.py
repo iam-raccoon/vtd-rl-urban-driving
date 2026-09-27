@@ -36,12 +36,14 @@ import torch
 REPO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, REPO)
 from vtd_rl import rule_stack as rs  # noqa: E402
+from vtd_rl.env.drive_env import EnvConfig  # noqa: E402
 from vtd_rl.eval.verdict import completed_only, judge, major_total  # noqa: E402
 from vtd_rl.policy import device as pick_device  # noqa: E402
 from vtd_rl.policy.evaluate import evaluate_policy, evaluate_teacher, violation_counts  # noqa: E402
 from vtd_rl.policy.net import DrivePolicy  # noqa: E402
 from vtd_rl.rl.actor_critic import ActorCritic  # noqa: E402
 from vtd_rl.rl.ppo import PPOConfig  # noqa: E402
+from vtd_rl.rl.reward_cfg import reward_config_from_hparams  # noqa: E402
 from vtd_rl.world.board import load_curriculum  # noqa: E402
 
 STAGE1_LABEL, STAGE2_LABEL = "stage1", "stage2"
@@ -544,9 +546,16 @@ def main():
         ac.eval()
         m3_policy = DrivePolicy.load(a.m3, device=dev)
 
-        m4a_ev = {label: evaluate_policy(ac.policy, boards_by_stage[label], seeds=eval_seeds)
+        # 채점 대상 실행(`--run`)이 실제로 쓴 보상 설정을 log.jsonl 의 hparams 에서 되살린다 —
+        # 안 그러면 평가가 `EnvConfig()` 기본값으로 돌아 '평균 보상' 이 학습 목적함수와 다른
+        # 자가 된다(M4c 최종 리뷰 I6). M3 학생도 같은 설정으로 재야 비교가 성립한다.
+        run_env_cfg = EnvConfig(reward=reward_config_from_hparams(last.get("hparams")))
+
+        m4a_ev = {label: evaluate_policy(ac.policy, boards_by_stage[label], seeds=eval_seeds,
+                                         config=run_env_cfg)
                   for label in stage_labels}
-        m3_ev = {label: evaluate_policy(m3_policy, boards_by_stage[label], seeds=eval_seeds)
+        m3_ev = {label: evaluate_policy(m3_policy, boards_by_stage[label], seeds=eval_seeds,
+                                        config=run_env_cfg)
                  for label in stage_labels}
         teacher_ev = {label: evaluate_teacher(boards_by_stage[label], seeds=eval_seeds)
                       for label in stage_labels}
@@ -558,11 +567,15 @@ def main():
                 continue   # 학습이 아직 안 끝났다(ac-best.pt 없음) — 요약 표에서 "미완료" 로 남는다
             cand = ActorCritic.load(os.path.join(rd, "ac-best.pt"), device=dev)
             cand.eval()
+            # 비교 실행은 각자 자신의 보상 설정으로 잰다 — 여러 실행이 서로 다른 목적함수로
+            # 학습됐을 수 있으므로(예: --comfort-steer 스윕) 그 실행 자신의 log.jsonl 이 자다.
+            cand_env_cfg = EnvConfig(reward=reward_config_from_hparams(rows[-1].get("hparams")))
             evs = {}
             for label, path in _curricula_from_log(rows):
                 if os.path.exists(path):
                     _n, boards = load_curriculum(path)
-                    evs[label] = evaluate_policy(cand.policy, boards, seeds=eval_seeds)
+                    evs[label] = evaluate_policy(cand.policy, boards, seeds=eval_seeds,
+                                                 config=cand_env_cfg)
             extra_evs[rd] = evs
 
     lines = [f"# {a.title}", "",
