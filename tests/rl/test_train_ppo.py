@@ -590,3 +590,49 @@ def test_entropy_mode_스모크_실행에서_학습_정책까지_실제로_닿�
 
     net = _AC.load(str(tmp_path / "run" / "ac-best.pt"))
     assert net.policy.cfg.entropy_mode == "squashed"
+
+
+def test_log_std_max_기본값은_None이라_체크포인트_값을_쓴다():
+    """기본값은 `None` — 기존 실행이 하나도 안 바뀐다."""
+    mod = _load_train_ppo_module()
+    a = mod._build_parser().parse_args(["--out", "/tmp/x", "--steps", "1"])
+    assert a.log_std_max is None
+
+
+def test_M4c_가_더한_플래그들의_기본값도_잠근다():
+    """`_build_parser()` 를 뺀 김에 M4c 플래그 넷의 기본값을 잠근다 — 여태 하나도 안 잠겨 있었다."""
+    from vtd_rl.env.reward import RewardConfig
+    mod = _load_train_ppo_module()
+    a = mod._build_parser().parse_args(["--out", "/tmp/x", "--steps", "1"])
+    assert a.comfort_steer == RewardConfig().comfort_steer
+    assert a.comfort_accel == RewardConfig().comfort_accel
+    assert a.comfort_on_intent is False
+    assert a.entropy_mode is None
+    assert a.violation_mode == RewardConfig().violation_mode      # 작업 2 가 더한 것
+
+
+@pytest.mark.slow
+def test_log_std_max를_주면_학습_내내_그_아래로_묶인다(tmp_path):
+    """연습 모드로 짧게 돌려 `log.jsonl` 의 모든 줄에서 log_std 가 상한 이하인지 본다.
+
+    `forward()` 는 clamp 하지 않고(기울기를 죽인다) `opt.step()` 뒤 `clamp_log_std()` 가
+    묶는다 — 그 규약이 새 상한에도 적용되는지 확인하는 것이 이 테스트의 목적이다.
+    """
+    import json
+    import os
+    import subprocess
+
+    repo = os.path.join(os.path.dirname(__file__), "..", "..")
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    out = subprocess.run(
+        [os.path.join(repo, ".venv", "bin", "python"),
+         os.path.join(repo, "scripts", "train_ppo.py"),
+         "--out", str(tmp_path / "run"), "--smoke", "--steps", "4000",
+         "--log-std-max", "-1.0"],
+        capture_output=True, text=True, env=env, cwd=repo, timeout=1800)
+    assert out.returncode == 0, out.stderr[-3000:]
+    rows = [json.loads(x) for x in open(tmp_path / "run" / "log.jsonl") if x.strip()]
+    assert rows, "로그가 비었다"
+    for r in rows:
+        assert max(r["log_std"]) <= -1.0 + 1e-6, (r["step"], r["log_std"])

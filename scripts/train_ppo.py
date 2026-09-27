@@ -262,6 +262,12 @@ def _build_parser() -> argparse.ArgumentParser:
                     default=default_reward_cfg.violation_mode,
                     help="위반을 세는 규칙. once_per_section 은 대회 채점기와 같다"
                          "((항목,구간)마다 한 번, 심화는 차액만)")
+    ap.add_argument("--log-std-max", type=float, default=None,
+                    help="정책의 σ 상한(log 스케일)을 덮어쓴다. 기본값은 체크포인트/PolicyConfig "
+                         "값 그대로(0.5). M4c 는 3M 에서 결정적 모드만 무너지는 것을 봤는데 σ 와 "
+                         "정책 이동이 함께 커져 원인을 못 갈랐다 — 끝난 체크포인트의 σ 를 낮춰선 "
+                         "못 잰다(결정적 평가는 log_std 를 안 본다). 이 값을 조이고 다시 학습하는 "
+                         "것이 그 개입이다.")
     return ap
 
 
@@ -323,6 +329,27 @@ def _apply_entropy_mode(net: ActorCritic, entropy_mode: str | None) -> ActorCrit
     return net
 
 
+def _apply_log_std_max(net: ActorCritic, log_std_max: float | None) -> ActorCritic:
+    """`--log-std-max` 덮어쓰기 — `None` 이면 손대지 않고 그대로 돌려준다(체크포인트/`PolicyConfig`
+
+    값 유지, 기존 동작 불변). 값이 있으면 `_apply_entropy_mode` 와 같은 이유로 `net.policy.cfg`
+    (학습에 실제로 쓰이는 정책)와 `net.cfg.policy`(`net.save()` 가 체크포인트에 쓰는 자리) 둘 다
+    새 값으로 바꿔 끼운다 — 한쪽만 바꾸면 학습은 새 상한을 쓰는데 저장된 체크포인트엔 옛 값이
+    실리는(또는 그 반대인) 어긋남이 생긴다(M4c 의 entropy_mode 버그와 같은 함정).
+
+    갱신 직후 `net.clamp_log_std()` 를 불러 이어받은 체크포인트의 σ 가 새 상한 위에 있어도
+    그 자리에서 눌러 준다 — `--init` 체크포인트의 log_std 가 0.5 근처였는데 `--log-std-max`
+    로 그보다 낮은 값을 주면, clamp 없이는 첫 최적화 걸음 전까지 σ 가 새 상한을 넘는 채로 남는다.
+    """
+    if log_std_max is None:
+        return net
+    new_policy_cfg = dataclasses.replace(net.policy.cfg, log_std_max=log_std_max)
+    net.policy.cfg = new_policy_cfg
+    net.cfg = dataclasses.replace(net.cfg, policy=new_policy_cfg)
+    net.clamp_log_std()
+    return net
+
+
 def main():
     ap = _build_parser()
     a = ap.parse_args()
@@ -377,6 +404,7 @@ def main():
         venv = make_vec_env(a.curricula, a.envs, train_env_cfg, seed=a.seed, asynchronous=not a.smoke)
         net = (ActorCritic.from_policy(a.init, device=dev) if a.init else ActorCritic()).to(dev)
         net = _apply_entropy_mode(net, a.entropy_mode)   # 두 경로(이식/새로 시작) 모두 여기 합류한 뒤 지난다
+        net = _apply_log_std_max(net, a.log_std_max)     # M4d — σ 상한 개입(결정적 모드 붕괴 원인 분리용)
         ref_state = snapshot_policy(net)   # 드리프트 기준점 — `--init` 로드 직후, 갱신 전
         opt = _build_optimizer(net, cfg)
         buf = RolloutBuffer(a.rollout, a.envs, dev)
