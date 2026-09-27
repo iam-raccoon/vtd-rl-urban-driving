@@ -409,6 +409,24 @@ def test_승차감_인자가_RewardConfig에_반영된다():
     assert off.comfort_on_intent is False
 
 
+def test_violation_mode_인자가_RewardConfig에_반영된다():
+    """`--violation-mode` 가 `_build_reward_cfg` 를 거쳐 실제로 `RewardConfig` 에 닿는지 잠근다.
+
+    `hparams = vars(a)` 라서 실행 로그·성적표·평가는 CLI 인자 그대로 `once_per_section` 이라고
+    기록하는데 학습은 `_build_reward_cfg` 배선이 끊겨 `repeat` 로 도는 조합이 가능하다 —
+    `test_승차감_인자가_RewardConfig에_반영된다` 와 같은 취지지만 그 테스트는 이 필드를
+    안 건드려 `violation_mode=a.violation_mode` 를 `"repeat"` 로 하드코딩해도 잡지 못한다.
+    """
+    module = _load_train_ppo_module()
+    a = module._build_parser().parse_args([
+        "--out", "/tmp/불필요-존재안함", "--violation-mode", "once_per_section"])
+    cfg = module._build_reward_cfg(a)
+    assert cfg.violation_mode == "once_per_section"
+
+    off = module._build_reward_cfg(module._build_parser().parse_args(["--out", "x"]))
+    assert off.violation_mode == "repeat"
+
+
 @pytest.mark.slow
 def test_comfort_on_intent가_승차감의_표본_잡음을_줄인다(tmp_path):
     """`--comfort-on-intent` 를 켜면 실행 행동이 아니라 정책의 의도(결정적 평균)의 변화로

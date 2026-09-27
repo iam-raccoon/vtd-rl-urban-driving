@@ -278,11 +278,12 @@ def _build_cfg(a) -> PPOConfig:
 
 
 def _build_reward_cfg(a) -> RewardConfig:
-    """`RewardConfig` 는 frozen dataclass 라 `dataclasses.replace` 로 CLI 로 연 세 필드만 덮어쓴다.
+    """`RewardConfig` 는 frozen dataclass 라 `dataclasses.replace` 로 CLI 로 연 네 필드만 덮어쓴다.
 
-    인자를 하나도 안 주면 `a.comfort_steer`/`a.comfort_accel`/`a.comfort_on_intent` 가 이미
-    `RewardConfig()` 자신의 기본값이므로(위 `_build_parser` 참고) 이 함수가 만드는 `cfg` 는
-    `RewardConfig()` 와 완전히 같다 — 기본 동작이 안 바뀐다(`_build_cfg` 와 같은 패턴).
+    인자를 하나도 안 주면 `a.comfort_steer`/`a.comfort_accel`/`a.comfort_on_intent`/
+    `a.violation_mode` 가 이미 `RewardConfig()` 자신의 기본값이므로(위 `_build_parser` 참고)
+    이 함수가 만드는 `cfg` 는 `RewardConfig()` 와 완전히 같다 — 기본 동작이 안 바뀐다
+    (`_build_cfg` 와 같은 패턴).
     """
     return dataclasses.replace(RewardConfig(), comfort_steer=a.comfort_steer,
                                comfort_accel=a.comfort_accel, comfort_on_intent=a.comfort_on_intent,

@@ -201,6 +201,11 @@ def test_구간당_한_번_모드의_판당_위반이_훨씬_작다():
     assert totals["repeat"] == pytest.approx(base.minor * 10)   # 10 초 / repeat_gap 1 초
 
 
+def test_잘못된_violation_mode는_거부한다():
+    with pytest.raises(ValueError):
+        ViolationTracker(1.0, violation_mode="nonsense")
+
+
 def test_reset하면_구간_기록이_지워진다():
     tr = ViolationTracker(1.0, violation_mode="once_per_section")
     assert tr.count([Hit(0.0, 0, 1, "minor")])
