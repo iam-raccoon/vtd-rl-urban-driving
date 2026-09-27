@@ -258,3 +258,44 @@ def test_대회_점수는_보상_설정에_영향받지_않는다():
         finally:
             env.close()
     assert results[0] == results[1]
+
+
+@pytest.mark.slow
+def test_구간당_한_번_모드의_위반_합계가_채점기_감점과_같다():
+    """보상의 위반 항이 대회 채점기가 실제로 깎은 점수와 일치해야 한다.
+
+    `info["result"]["sheet"]` 는 심판이 낸 구간별 감점표다 — 실측(2026-09-27, `H_0_250`
+    보드·seed=0·이 판)으로 브리프가 가정한 "구간마다 `{항목: 등급}` dict 의 리스트" 모양과
+    정확히 일치함을 확인했다(`vtd_rl/env/drive_env.py:_finish` 의
+    `[dict(s) for s in sheet.state]`, `third_party/rule_stack` 의 `Sheet.state` 정의 그대로).
+    그 표의 위반 감점 합(충돌 항목 ⑪⑭ 제외)과, 판 내내 쌓은 `reward_terms["violation"]` 의
+    합이 같아야 한다 — 그게 "보상이 채점과 같은 것을 잰다" 는 이 마일스톤의 정의다.
+
+    항목 15(리스폰) 예외(`ViolationTracker._charge_once`의 독스트링 참고)는 여기서는 안 건드린다
+    — 이 판은 리스폰이 한 번도 없다(`info["result"]["respawns"] == {}`, 아래에서 확인),
+    그러니 빼야 할 15 짜리 항이 애초에 없다.
+    """
+    from vtd_rl.env.reward import COLLISION_ITEMS
+
+    boards = load_curriculum("curricula/stage1.json")[1]
+    cfg = RewardConfig(violation_mode="once_per_section")
+    env = VtdDriveEnv(boards, EnvConfig(reward=cfg))
+    try:
+        env.reset(seed=0, options={"board": boards[0].name})
+        total, info = 0.0, None
+        for _ in range(20000):
+            _o, _r, term, trunc, info = env.step(
+                {"control": np.array([0.05, 0.6], np.float32), "turn": 0})
+            total += info["reward_terms"]["violation"]
+            if term or trunc:
+                break
+        assert info is not None and "result" in info, "판이 안 끝났다"
+        assert not info["result"]["respawns"], "이 판에 리스폰이 있다 — 항목 15 예외를 다시 따져라"
+        sheet = info["result"]["sheet"]
+        # sheet 는 구간별 {항목: 등급} 이다. 충돌 항목은 보상에서 따로 처리하므로 뺀다.
+        expect = sum(cfg.major if lv == "major" else cfg.minor
+                     for sec in sheet for item, lv in sec.items()
+                     if int(item) not in COLLISION_ITEMS)
+        assert total == pytest.approx(expect, abs=1e-6), (total, expect)
+    finally:
+        env.close()
