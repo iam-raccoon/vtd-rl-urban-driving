@@ -636,3 +636,37 @@ def test_log_std_max를_주면_학습_내내_그_아래로_묶인다(tmp_path):
     assert rows, "로그가 비었다"
     for r in rows:
         assert max(r["log_std"]) <= -1.0 + 1e-6, (r["step"], r["log_std"])
+
+
+def test_log_std_max_덮어쓰기가_저장되는_cfg에도_반영된다(tmp_path):
+    """`net.policy.cfg`(학습에 쓰이는 정책)와 `net.cfg.policy`(`net.save()` 가 체크포인트에
+
+    쓰는 자리) **둘 다** 새 상한을 가져야 한다. 한쪽만 바꾸면 학습은 새 상한으로 도는데
+    저장된 체크포인트엔 옛 값이 실려, 그 체크포인트를 이어받은 다음 실행이 조용히 다른 σ
+    상한으로 돈다 — M4c 의 `entropy_mode` 에서 실제로 났던 버그다.
+
+    2026-09-27 실측: `net.cfg` 갱신 줄을 빼는 돌연변이가 세 조각(477/133/26)을 전부 통과했다.
+    `entropy_mode` 에는 이 대조 테스트가 있는데 `log_std_max` 에는 없어서 생긴 구멍이다.
+    """
+    module = _load_train_ppo_module()
+    net = ActorCritic()
+    assert net.policy.cfg.log_std_max == 0.5 and net.cfg.policy.log_std_max == 0.5
+
+    out = module._apply_log_std_max(net, -0.6)
+    assert out.policy.cfg.log_std_max == -0.6
+    assert out.cfg.policy.log_std_max == -0.6, "net.cfg.policy 가 안 따라왔다 — 저장될 값이 옛것이다"
+
+    # 저장했다가 다시 읽어도 새 상한이 남아야 한다(체크포인트 왕복까지 잠근다).
+    path = tmp_path / "ac.pt"
+    out.save(str(path))
+    assert ActorCritic.load(str(path)).policy.cfg.log_std_max == -0.6
+
+    # 상한을 내리면 그 자리에서 σ 가 눌려야 한다(clamp_log_std 호출 확인).
+    assert float(out.policy.log_std.max()) <= -0.6 + 1e-6
+
+
+def test_log_std_max가_None이면_정책을_안_건드린다():
+    module = _load_train_ppo_module()
+    net = ActorCritic()
+    out = module._apply_log_std_max(net, None)
+    assert out is net and out.policy.cfg.log_std_max == 0.5
