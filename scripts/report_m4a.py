@@ -37,6 +37,7 @@ REPO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, REPO)
 from vtd_rl import rule_stack as rs  # noqa: E402
 from vtd_rl.env.drive_env import EnvConfig  # noqa: E402
+from vtd_rl.env.reward import RewardConfig  # noqa: E402
 from vtd_rl.eval.verdict import completed_only, judge, major_total  # noqa: E402
 from vtd_rl.policy import device as pick_device  # noqa: E402
 from vtd_rl.policy.evaluate import evaluate_policy, evaluate_teacher, violation_counts  # noqa: E402
@@ -60,7 +61,14 @@ DIAGNOSTIC_SAMPLE_TARGET = 20
 # 인데 여기 빠져 있었다 — 그래서 `sigma-detach-s0` 실행이 "(기본값)" 으로 찍혀, 하이퍼파라미터가
 # "같다"고 적힌 두 행이 항목⑦ 68 vs 39 로 갈린 걸 읽는 사람이 시드 잡음으로 오독했다
 # (2026-09-22 최종 리뷰 Critical). 반드시 여기 추가해야 한다.
-CLI_HPARAM_KEYS = ("lr", "entropy_coef", "target_kl", "imitation_half_life", "imitation_sigma")
+#
+# 보상 필드(`comfort_steer` 등)도 같은 이유로 여기 있어야 한다 — 없으면 두 실행이 서로 다른
+# 보상 설정으로 학습됐어도 이 열이 "(기본값)" 이라 찍어 정확히 그 차이를 숨긴다(M4d Task 1
+# 재리뷰 Important #3). 손으로 나열하지 않고 `dataclasses.fields(RewardConfig)` 에서 뽑는다 —
+# `vtd_rl/rl/reward_cfg.py` 와 같은 방식이라, 다음 작업이 새 필드(`violation_mode`)를 더해도
+# 자동으로 실린다.
+CLI_HPARAM_KEYS = (("lr", "entropy_coef", "target_kl", "imitation_half_life", "imitation_sigma")
+                   + tuple(f.name for f in dataclasses.fields(RewardConfig)))
 
 
 def _circled(n: int) -> str:
@@ -124,10 +132,15 @@ def _curricula_from_log(rows: list) -> list:
 
 
 def _hparam_diff(hparams) -> str:
-    """`CLI_HPARAM_KEYS` 만 `PPOConfig()` 기본값과 비교해 바뀐 것만 "key=value" 로 나열한다."""
+    """`CLI_HPARAM_KEYS` 만 기본값과 비교해 바뀐 것만 "key=value" 로 나열한다.
+
+    `CLI_HPARAM_KEYS` 가 `PPOConfig` 필드(`lr` 등)와 `RewardConfig` 필드(`comfort_steer` 등)를
+    섞어 담으므로, 비교 기준 `defaults` 도 둘 다 합쳐야 한다 — `PPOConfig()` 만 쓰면 보상 필드
+    키에서 `KeyError` 가 난다(두 dataclass 필드 이름이 겹치지 않음을 계획 단계에서 확인했다).
+    """
     if not hparams:
         return "기록 안 됨(이 실행은 hparams 로깅 이전 버전으로 돌았다)"
-    defaults = dataclasses.asdict(PPOConfig())
+    defaults = {**dataclasses.asdict(PPOConfig()), **dataclasses.asdict(RewardConfig())}
     diffs = [f"{k}={hparams[k]}" for k in CLI_HPARAM_KEYS if k in hparams and hparams[k] != defaults[k]]
     return ", ".join(diffs) if diffs else "(기본값)"
 
@@ -602,6 +615,15 @@ def main():
         rd_last_eval = _last_eval_row(rows)
         lines += _curve_table(rows, list(rd_last_eval["stages"]) if rd_last_eval else [])
         lines += _diagnostic_table(rows)
+
+    # M4d Task 1 재리뷰(Important #3): `--compare` 실행은 각자 자신의 보상 설정으로 평가된다
+    # (위 `run_env_cfg`/`cand_env_cfg` 참고) — 그래서 위 학습 곡선 표들과 아래 실행 비교 표의
+    # "평균 보상" 열은 실행마다 서로 다른 자로 잰 값일 수 있다. 가로로 비교하면 안 된다는 것을
+    # 캡션으로 명시하지 않으면 읽는 사람이 `repeat` 대 `once_per_section` 처럼 정의상 스케일이
+    # 다른 값을 같은 잣대로 오독한다.
+    lines += ["", "> 평균 보상 열은 각 실행 **자신의** 보상 설정으로 잰 값이다 — 설정이 다른"
+                  " 실행끼리 이 열을 가로로 비교하면 안 된다(완주율·점수는 심판이 따로 매겨"
+                  " 설정과 무관하니 비교해도 된다)."]
 
     lines += _summary_table(run_dirs, rows_by_run, best_steps, extra_evs, a.skip_eval)
 

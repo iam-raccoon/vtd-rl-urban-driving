@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 
 import pytest
 
@@ -544,3 +545,161 @@ def test_summary_table도_completed_only로_중대를_센다():
     text = "\n".join(lines)
     assert "| 1 | 0 |" in text     # completed_only 를 쓰면 항목⑦ 1건(완주 판만), 항목② 0건
     assert "| 3 | 0 |" not in text   # completed_only 를 안 쓰면 3건(전부 합산)이 됐을 것
+
+
+def _write_fake_ac(path: str, net=None):
+    """실제 시뮬레이션·학습 없이 `ActorCritic.load` 가 읽을 수 있는 최소 체크포인트를 쓴다.
+
+    `net` 을 주면 그 상태를 그대로 쓴다 — `_detect_best_step` 이 매칭할 `ac-best.pt`/`ac-<N>.pt`
+    쌍처럼 **같은** state_dict 를 여러 파일에 남겨야 할 때 재사용한다(각자 새로 `ActorCritic()` 을
+    만들면 초기화가 매번 달라 `torch.equal` 비교가 실패한다).
+    """
+    from vtd_rl.rl.actor_critic import ActorCritic
+    (net or ActorCritic()).save(path)
+
+
+def _write_fake_m3(path: str):
+    from vtd_rl.policy.net import DrivePolicy, PolicyConfig
+    DrivePolicy(PolicyConfig()).save(path)
+
+
+def test_run과_m3_평가가_실행의_보상_설정을_받는다(tmp_path, monkeypatch):
+    """M4d Task 1 재리뷰(Important #1): 리뷰어가 `config=run_env_cfg` 를 `--run`/`--m3` 평가
+    호출부에서 지우고 기존 `tests/rl/test_report_m4a.py` 20개(서브프로세스 e2e 포함)를 전부
+    돌렸는데 하나도 안 깨졌다 — `main()` 의 실제 평가 배선이 어디에도 값으로 안 잠겨 있었다는
+    뜻이다. 모듈 수준 `evaluate_policy` 를 monkeypatch 해 각 호출이 받은 `config` 를 어떤
+    정책 객체로 불렸는지(`id(policy)`)별로 붙잡는다 — `ac.policy` 호출과 `m3_policy` 호출이
+    **둘 다** 그 실행의 `hparams` 로 만든 같은 `run_env_cfg` 를 받아야 "같은 자로 재야 비교가
+    성립한다"(브리프)가 지켜진다. 가짜 hparams·최소 체크포인트만 쓰고 서브프로세스 학습은
+    안 한다(`tests/rl/test_train_ppo.py::test_평가가_실행의_보상_설정을_받는다` 와 같은 패턴).
+    """
+    from vtd_rl.env.reward import RewardConfig
+
+    module = _load_report_m4a_module()
+
+    run_dir = str(tmp_path / "run")
+    _write_minimal_log(run_dir, {"seed": 0, "comfort_steer": -0.01})
+    _write_fake_ac(os.path.join(run_dir, "ac-best.pt"))
+    m3_path = str(tmp_path / "m3.pt")
+    _write_fake_m3(m3_path)
+
+    seen_by_policy: dict = {}
+
+    def fake_evaluate_policy(policy, boards, seeds=None, config=None):
+        seen_by_policy.setdefault(id(policy), []).append(config)
+        return {"goal_rate": 1.0, "mean_score": 90.0, "mean_score_raw": 90.0,
+                "mean_reward": 50.0, "episodes": []}
+
+    def fake_evaluate_teacher(boards, seeds=None, config=None):
+        return {"goal_rate": 1.0, "mean_score": 95.0, "mean_score_raw": 95.0,
+                "mean_reward": 60.0, "episodes": []}
+
+    monkeypatch.setattr(module, "evaluate_policy", fake_evaluate_policy)
+    monkeypatch.setattr(module, "evaluate_teacher", fake_evaluate_teacher)
+
+    report = str(tmp_path / "out.md")
+    monkeypatch.setattr(sys, "argv", ["report_m4a.py", "--run", run_dir, "--m3", m3_path,
+                                      "--out", report, "--device", "cpu"])
+    assert module.main() == 0
+
+    expected = module.EnvConfig(reward=RewardConfig(comfort_steer=-0.01))
+    assert len(seen_by_policy) == 2, seen_by_policy   # ac.policy 하나 + m3_policy 하나
+    for policy_id, configs in seen_by_policy.items():
+        assert configs == [expected] * len(configs), (policy_id, configs)
+
+
+def test_compare_실행은_각자의_보상_설정으로_평가된다(tmp_path, monkeypatch):
+    """M4d Task 1 재리뷰(Important #1) 세 번째 자리: `--compare` 실행은 **자기 자신의**
+    `hparams` 로 만든 설정으로 평가돼야 한다(Ruling: 한 실행의 '평균 보상' 은 그 실행 자신의
+    목적함수로 재는 것이 참이다 — 남의 목적함수로 조용히 다시 매기는 것이 이 프로젝트가 계속
+    당한 실패다). `cand_env_cfg` 를 지우거나 `run_env_cfg` 로 바꿔치기하면 이 테스트가 잡는다.
+    """
+    from vtd_rl.env.reward import RewardConfig
+    from vtd_rl.rl.actor_critic import ActorCritic
+
+    module = _load_report_m4a_module()
+
+    run_dir = str(tmp_path / "run")
+    _write_minimal_log(run_dir, {"seed": 0, "comfort_steer": -0.01})
+    _write_fake_ac(os.path.join(run_dir, "ac-best.pt"))
+    m3_path = str(tmp_path / "m3.pt")
+    _write_fake_m3(m3_path)
+
+    cmp_dir = str(tmp_path / "cmp")
+    _write_minimal_log(cmp_dir, {"seed": 1, "comfort_steer": -0.02})
+    cmp_net = ActorCritic()   # 같은 객체를 두 파일에 저장해야 _detect_best_step 이 매칭한다
+    _write_fake_ac(os.path.join(cmp_dir, "ac-best.pt"), net=cmp_net)
+    _write_fake_ac(os.path.join(cmp_dir, "ac-1.pt"), net=cmp_net)
+
+    seen = []
+
+    def fake_evaluate_policy(policy, boards, seeds=None, config=None):
+        seen.append(config)
+        return {"goal_rate": 1.0, "mean_score": 90.0, "mean_score_raw": 90.0,
+                "mean_reward": 50.0, "episodes": []}
+
+    def fake_evaluate_teacher(boards, seeds=None, config=None):
+        return {"goal_rate": 1.0, "mean_score": 95.0, "mean_score_raw": 95.0,
+                "mean_reward": 60.0, "episodes": []}
+
+    monkeypatch.setattr(module, "evaluate_policy", fake_evaluate_policy)
+    monkeypatch.setattr(module, "evaluate_teacher", fake_evaluate_teacher)
+
+    report = str(tmp_path / "out.md")
+    monkeypatch.setattr(sys, "argv", ["report_m4a.py", "--run", run_dir, "--compare", cmp_dir,
+                                      "--m3", m3_path, "--out", report, "--device", "cpu"])
+    assert module.main() == 0
+
+    run_cfg = module.EnvConfig(reward=RewardConfig(comfort_steer=-0.01))
+    cmp_cfg = module.EnvConfig(reward=RewardConfig(comfort_steer=-0.02))
+    assert run_cfg != cmp_cfg   # 이 테스트가 실제로 뭔가 구분하고 있다는 자기 확인
+    assert run_cfg in seen and cmp_cfg in seen, seen
+    # compare 실행 평가가 `run_cfg` 로 새어 들지 않아야 한다(각자의 자로 재야 한다).
+    assert seen.count(cmp_cfg) >= 1 and all(c in (run_cfg, cmp_cfg) for c in seen)
+
+
+def test_hparam_diff는_보상_필드_변경도_잡는다(tmp_path):
+    """M4d Task 1 재리뷰(Important #3-나): `CLI_HPARAM_KEYS` 에 보상 필드가 하나도 없어서 두
+
+    실행의 보상 설정이 달라도 '바뀐 하이퍼파라미터' 열이 "(기본값)" 이라 찍어 정확히 그 차이를
+    숨겼다. 손으로 나열하지 않고 `dataclasses.fields(RewardConfig)` 에서 뽑아야 다음 작업이
+    필드(`violation_mode`)를 더해도 자동으로 실린다 — 그래서 필드 집합 자체를 대조하고,
+    `_hparam_diff` 가 실제로 차이를 잡는지, CLI 왕복에서도 보이는지 값으로 잠근다.
+    """
+    import dataclasses
+
+    from vtd_rl.env.reward import RewardConfig
+
+    module = _load_report_m4a_module()
+    reward_field_names = {f.name for f in dataclasses.fields(RewardConfig)}
+    assert reward_field_names <= set(module.CLI_HPARAM_KEYS)
+
+    base_hparams = {"lr": 3e-4, "comfort_steer": -0.10}       # RewardConfig() 기본값과 같다
+    changed_hparams = {"lr": 3e-4, "comfort_steer": -0.02}
+    assert module._hparam_diff(base_hparams) == "(기본값)"
+    assert module._hparam_diff(changed_hparams) == "comfort_steer=-0.02"
+
+    run_a, run_b = str(tmp_path / "run_a"), str(tmp_path / "run_b")
+    _write_minimal_log(run_a, base_hparams)
+    _write_minimal_log(run_b, changed_hparams)
+    report = str(tmp_path / "cmp.md")
+    made = _report(["--run", run_a, "--compare", run_b, "--out", report, "--skip-eval"])
+    assert made.returncode == 0, made.stderr[-3000:]
+    text = open(report, encoding="utf-8").read()
+    assert "comfort_steer=-0.02" in text
+    assert "(기본값)" in text   # run_a 는 바뀐 게 없다
+
+
+def test_평균_보상_열은_실행마다_다른_자로_잰다는_캡션이_있다(tmp_path):
+    """M4d Task 1 재리뷰(Important #3-가): `--compare` 실행은 각자 자신의 보상 설정으로
+
+    평가되므로(Ruling) '평균 보상' 열을 실행끼리 가로로 비교하면 안 된다 — 그런데 그 경고가
+    생성되는 마크다운 어디에도 없었다. 학습 곡선 표 근처에 캡션 한 줄이 실제로 찍히는지 잠근다.
+    """
+    run_dir = str(tmp_path / "run")
+    _write_minimal_log(run_dir)
+    report = str(tmp_path / "out.md")
+    made = _report(["--run", run_dir, "--out", report, "--skip-eval"])
+    assert made.returncode == 0, made.stderr[-3000:]
+    text = open(report, encoding="utf-8").read()
+    assert "자신의" in text and "보상 설정" in text and "가로로 비교" in text

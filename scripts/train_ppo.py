@@ -349,9 +349,13 @@ def main():
     # 판 하나가 2500~13100 걸음인데 --smoke 의 훈련 예산(기본 4000)은 그보다 작을 수 있어,
     # 판이 실행 내내 한 번도 안 끝나면 `rollout_return_n` 이 계측 줄마다 0 으로만 찍힌다
     # (2026-09-21 실측 — 브리프가 놓친 불일치, RED 로 잡았다). 훈련용 벡터 환경만 timeout 을
-    # 크게 당겨 스모크 예산 안에서 반드시 최소 한 판은 끝나게 한다. 평가(`evaluate_policy`·
-    # `evaluate_teacher`)는 이 값을 안 받고 각자 `EnvConfig()` 기본값을 새로 만들어 쓰므로,
-    # 이 축소는 훈련 롤아웃에만 미치고 성적 판정(완주율·점수)에는 영향이 없다.
+    # 크게 당겨 스모크 예산 안에서 반드시 최소 한 판은 끝나게 한다. `evaluate_policy`(이
+    # 함수를 통해 도는 `_evaluate_stages` 의 주기·최종·후보 평가 세 곳 전부)는 M4d Task 1 부터
+    # 이 `train_env_cfg` 를 그대로 받으므로, `--smoke` 의 `time_limit_scale=0.1` 이 학습 중
+    # 평가에도 걸린다 — 의도한 변경이다(연습 모드는 평가도 짧게 도는 게 목적이다). 여전히 이
+    # 값을 안 받고 각자 `EnvConfig()` 기본값을 새로 만들어 쓰는 건 `evaluate_teacher`(아래
+    # 요약용 호출, `evaluate_teacher(boards, seeds=(0,))`)뿐이다 — 선생님 점수는 정책 행동에
+    # 의존하지 않아 보상 설정과 무관하다.
     reward_cfg = _build_reward_cfg(a)
     train_env_cfg = (EnvConfig(world=WorldConfig(time_limit_scale=0.1), reward=reward_cfg)
                      if a.smoke else EnvConfig(reward=reward_cfg))
