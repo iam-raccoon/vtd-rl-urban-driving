@@ -24,3 +24,16 @@ def test_없는_키는_기본값을_남긴다():
     cfg = reward_config_from_hparams({"comfort_steer": -0.02})
     assert cfg.comfort_accel == RewardConfig().comfort_accel
     assert cfg.comfort_on_intent is False
+
+
+def test_violation_mode를_복원한다():
+    """M4d 최종 리뷰 Important #2: `if k in _FIELDS` 에 `and k != "violation_mode"` 를 더해도
+
+    이 파일의 테스트 전부가(기존 것들은 승차감 세 필드만 본다) 통과했다 — 이 마일스톤이 새로
+    만든 필드가 복원 경로에서 무방비였다. 끊기면 성적표가 `once_per_section` 실행을 `repeat`
+    보상으로 평가하게 된다.
+    """
+    cfg = reward_config_from_hparams({"violation_mode": "once_per_section"})
+    assert cfg.violation_mode == "once_per_section"
+    # 안 주면 기본값(예전 동작)을 남긴다는 것도 같이 잠근다.
+    assert reward_config_from_hparams({}).violation_mode == RewardConfig().violation_mode == "repeat"

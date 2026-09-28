@@ -1,5 +1,8 @@
+import random
+
 import pytest
 
+from vtd_rl import rule_stack as rs
 from vtd_rl.env.reward import COLLISION_ITEMS, RewardConfig, RewardShaper, ViolationTracker
 from vtd_rl.referee.core import Hit
 from vtd_rl.world.board import load_board, slice_board
@@ -177,6 +180,23 @@ def test_심화되면_차액만_깎는다():
     assert p1 + p2 == pytest.approx(cfg.major)        # 합치면 중대 한 번과 같다
 
 
+def test_같은_슬롯에_major가_다시_와도_또_안_깎는다():
+    """M4d 최종 리뷰 Important #4: 심화 때(`minor`->`major`) `self._level[key] = h.level` 갱신을
+
+    `if cur is None:` 아래로 옮겨도(즉 첫 발생에만 기록하고 심화 때는 안 갱신해도) 기존
+    테스트 전부가 통과했다 — 그러면 슬롯이 계속 'minor' 로 보여 그 뒤에 오는 major 가 차액
+    (major-minor)을 매번 다시 문다. `test_심화되면_차액만_깎는다` 는 `minor`->`major` 까지만
+    보고 그 뒤에 오는 `major`->`major` 재청구는 안 본다.
+    """
+    cfg = RewardConfig(violation_mode="once_per_section")
+    tr = ViolationTracker(cfg.repeat_gap, violation_mode=cfg.violation_mode)
+    _c1, p1 = tr.charge([Hit(0.0, 0, 1, "minor")], cfg.minor, cfg.major)
+    _c2, p2 = tr.charge([Hit(1.0, 0, 1, "major")], cfg.minor, cfg.major)
+    _c3, p3 = tr.charge([Hit(2.0, 0, 1, "major")], cfg.minor, cfg.major)   # 다시 major
+    assert p3 == pytest.approx(0.0), "이미 major 인 슬롯에 또 major 가 와서 차액을 또 물었다"
+    assert p1 + p2 + p3 == pytest.approx(cfg.major)   # 합치면 여전히 중대 한 번과 같다
+
+
 def test_repeat_모드가_기본값이고_예전과_같다():
     assert RewardConfig().violation_mode == "repeat"
     tr = ViolationTracker(1.0)
@@ -228,3 +248,36 @@ def test_콜드스타트_판_첫_걸음은_변화량이_0이다():
     a = {"control": [0.8, 0.6], "turn": 0}     # 실행 행동도 크게 줘 실행-행동 폴백과도 갈린다
     out = sh.step([], 0.0, a, a, "running", intent=(0.8, 0.6))
     assert out.terms["comfort"] == pytest.approx(0.0)
+
+
+def test_구간당_한_번_모드가_채점기와_같은_감점을_낸다_속성():
+    """M4d 최종 리뷰 Important #5: "합성 히트 4000 순열 불일치 0" 을 리뷰가 일회용 스크립트로
+
+    확인했지만 레포에 회귀 테스트로 안 남아 있었다. 여기서는 고정 시드로 무작위 히트 열
+    수백 개를 만들어 채점기 `Sheet`(`vtd_rl.rule_stack.score_fma`, third_party 는 이 어댑터를
+    통해서만 읽는다)와 `ViolationTracker(once_per_section)` 의 총 감점을 대조한다.
+
+    항목 15(리스폰)는 뺀다 — 채점기가 `Sheet.hit` 밖에서 따로 세는 예외이고, `_charge_once`
+    독스트링(`vtd_rl/env/reward.py`)이 그 어긋남을 이미 문서화하고 있다.
+    """
+    sf = rs.score_fma
+    cfg = RewardConfig(violation_mode="once_per_section")
+    items = [i for i in sf.ITEMS if i != 15]
+    n_sections = 4
+    rng = random.Random(20260928)
+
+    for _ in range(300):
+        n_hits = rng.randint(0, 40)
+        hits = [Hit(t=float(k), sec=rng.randrange(n_sections), item=rng.choice(items),
+                    level=rng.choice(("minor", "major")))
+               for k in range(n_hits)]
+        rng.shuffle(hits)   # 순서를 섞어도 같은 규칙이 나오는지까지 본다
+
+        sheet = sf.Sheet(n_sections)
+        for h in hits:
+            sheet.hit(h.sec, h.item, h.level, "속성 테스트")
+        sheet_total = sum(100 - sheet.score(sec) for sec in range(n_sections))
+
+        tr = ViolationTracker(cfg.repeat_gap, violation_mode=cfg.violation_mode)
+        _counted, total = tr.charge(hits, cfg.minor, cfg.major)
+        assert -total == pytest.approx(sheet_total), (n_hits, hits)

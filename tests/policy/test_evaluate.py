@@ -1,7 +1,8 @@
 import pytest
 import torch
 
-from vtd_rl.policy.evaluate import evaluate_policy, evaluate_teacher, run_policy_episode
+from vtd_rl.policy.evaluate import (EpisodeOutcome, _summary, evaluate_policy, evaluate_teacher,
+                                    run_policy_episode)
 from vtd_rl.policy.net import DrivePolicy, PolicyConfig
 from vtd_rl.env.drive_env import VtdDriveEnv
 from vtd_rl.world.board import load_board, slice_board
@@ -41,3 +42,33 @@ def test_평가_요약():
 def test_선생님_기준():
     res = evaluate_teacher([short_board()], seeds=(0,))
     assert res["goal_rate"] == 1.0 and res["mean_score"] > 80.0
+
+
+def _fake_episode(score: float, outcome: str = "goal") -> EpisodeOutcome:
+    return EpisodeOutcome("판", 0, outcome, 10, 1.0, score, [])
+
+
+def test_mean_score_completed은_완주_판만의_평균이다():
+    """M4d 최종 리뷰 Critical 1: `mean_score_raw` 는 미완주 판도 그 판 점수 그대로 섞는데,
+
+    세계가 안 밟은 구간까지 5구간 전부 채점하고 미방문 구간은 100점을 줘서(`evaluate.py:24`
+    가 이미 적어 둔 함정) 일찍 멈춘 정책일수록 그 값이 오히려 높아진다. `mean_score_completed`
+    는 `outcome == "goal"` 인 판만의 평균이어야 한다.
+    """
+    episodes = [_fake_episode(90.0, "goal"), _fake_episode(100.0, "stalled"),
+               _fake_episode(80.0, "goal")]
+    summary = _summary(episodes)
+    assert summary["mean_score_completed"] == pytest.approx((90.0 + 80.0) / 2)
+    # 기존 키는 이번 변경으로 안 바뀐다 — `mean_score_raw` 는 미완주 판도 그대로, `mean_score`
+    # 는 미완주 판을 0점으로 친다(둘 다 기존 동작).
+    assert summary["mean_score_raw"] == pytest.approx((90.0 + 100.0 + 80.0) / 3)
+    assert summary["mean_score"] == pytest.approx((90.0 + 0.0 + 80.0) / 3)
+
+
+def test_완주_판이_없으면_mean_score_completed는_None이다():
+    episodes = [_fake_episode(100.0, "stalled"), _fake_episode(90.0, "offroad")]
+    summary = _summary(episodes)
+    assert summary["mean_score_completed"] is None
+    # 미완주 판만 있어도 기존 키는 그대로 계산된다.
+    assert summary["mean_score_raw"] == pytest.approx(95.0)
+    assert summary["mean_score"] == pytest.approx(0.0)

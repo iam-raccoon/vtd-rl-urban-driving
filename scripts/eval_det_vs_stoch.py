@@ -100,8 +100,18 @@ def main():
             det = evaluate_policy(net, boards, seeds=seeds)
             sto = evaluate_policy(net, boards, seeds=seeds, deterministic=False,
                                   generator=torch.Generator().manual_seed(a.stoch_seed))
+            # `det_score`/`sto_score` 는 기존 키다(옛 JSONL 과 비교해야 하니 그대로 둔다) —
+            # `mean_score_raw` 라 미완주 판도 그 판 점수 그대로 섞인 값이다(M4d 최종 리뷰
+            # Critical 1: 멈춰 선 판일수록 이 값이 오히려 높아진다). `*_score_completed` 가
+            # 완주 판만의 평균이고, `*_n_completed` 로 그 평균이 몇 판에서 나왔는지 알 수 있다.
+            det_n_completed = sum(1 for e in det["episodes"] if e.outcome == "goal")
+            sto_n_completed = sum(1 for e in sto["episodes"] if e.outcome == "goal")
             row[label] = {"det_goal": det["goal_rate"], "det_score": det["mean_score_raw"],
-                          "sto_goal": sto["goal_rate"], "sto_score": sto["mean_score_raw"]}
+                          "det_score_completed": det["mean_score_completed"],
+                          "det_n_completed": det_n_completed,
+                          "sto_goal": sto["goal_rate"], "sto_score": sto["mean_score_raw"],
+                          "sto_score_completed": sto["mean_score_completed"],
+                          "sto_n_completed": sto_n_completed}
         print(json.dumps(row, ensure_ascii=False))
         rows.append(row)
 

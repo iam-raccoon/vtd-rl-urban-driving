@@ -23,9 +23,17 @@ def _summary(episodes) -> dict:
     n = max(len(episodes), 1)
     # 완주하지 못한 판은 0점으로 친다 — 멈춰 선 차는 위반을 안 해 점수가 오히려 높다(M3 관찰).
     scored = [e.score if e.outcome == "goal" else 0.0 for e in episodes]
+    # `mean_score_raw` 는 미완주 판도 그 판의 점수 그대로 넣는다 — 세계가 안 밟은 구간까지
+    # 5구간 전부 채점하고 미방문 구간은 100점을 주므로(`VtdDriveEnv._finish`,
+    # `score_fma.Sheet.score`), 일찍 멈춘 정책일수록 이 값이 오히려 높아진다(M4d 최종 리뷰
+    # Critical 1). 완주 판만의 평균이 필요하면 이 `mean_score_completed` 를 써야 한다.
+    completed_scores = [e.score for e in episodes if e.outcome == "goal"]
+    mean_score_completed = (sum(completed_scores) / len(completed_scores)
+                            if completed_scores else None)
     return {"goal_rate": sum(1 for e in episodes if e.outcome == "goal") / n,
             "mean_score": sum(scored) / n,
             "mean_score_raw": sum(e.score for e in episodes) / n,
+            "mean_score_completed": mean_score_completed,
             "mean_reward": sum(e.reward for e in episodes) / n,
             "episodes": episodes}
 

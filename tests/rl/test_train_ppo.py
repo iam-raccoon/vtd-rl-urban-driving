@@ -568,6 +568,74 @@ def test_평가가_실행의_보상_설정을_받는다(monkeypatch):
 
 
 @pytest.mark.slow
+def test_최선_후보_재평가도_실행의_보상_설정을_받는다(tmp_path, monkeypatch, capsys):
+    """M4d 최종 리뷰 Important #3: `main()` 안의 `_evaluate_stages` 호출 세 자리(주기·최종·
+
+    최선 후보 재평가) 중 **최선 후보 재평가**(`train_ppo.py:560`) 만 `train_env_cfg` 를
+    `EnvConfig()` 로 되돌려도 이 파일의 테스트 32개가 전부 통과했다 —
+    `test_평가가_실행의_보상_설정을_받는다` 는 헬퍼 `_evaluate_stages` 를 직접 불러 호출부는
+    안 본다. `report_m4a.py` 쪽은 `main()` 수준 테스트 3개로 자리별로 잠갔는데(`--run`/
+    `--m3`/`--compare`) 같은 보강이 `train_ppo.py` 에는 안 갔다.
+
+    `evaluate_policy`/`evaluate_teacher` 를 monkeypatch 해 실제 평가 계산은 건너뛰고
+    (`report_m4a.py` 재리뷰 테스트와 같은 패턴), `--smoke` 로 실제 `main()` 을 돈다 —
+    `--eval-every` 가 `--steps` 의 절반이라 학습 루프 안에서 주기 평가가 서로 다른 스텝에서
+    두 번 걸린다. 첫 번째로 보는 정책 객체(`net.policy` — 주기·최종 평가가 공유하는 그
+    객체)에는 낮은 점수를, **처음 보는 것과 다른** 정책 객체(재적재된 `cand.policy` —
+    최선 후보 재평가만 이 객체를 쓴다)에는 높은 점수를 줘 후보가 항상 선택되게 만든다.
+    그러면 `summary["best_step"]`(=`chosen_step`)이 최종 스텝이 아니라 **후보의 스텝**으로
+    나와야 하고, 그 값이 최종 스텝과 다르다는 것 자체가 최선 후보 재평가 분기가 실제로
+    실행되고 선택까지 됐다는 증거다 — 그 경로를 확실히 밟은 채로 모든 호출(주기·최종·후보)이
+    같은 `train_env_cfg` 를 받았는지 한 번에 잠근다.
+    """
+    module = _load_train_ppo_module()
+
+    seen = []
+    first_policy_id = []
+
+    def fake_evaluate_policy(policy, boards, seeds=None, config=None):
+        pid = id(policy)
+        if not first_policy_id:
+            first_policy_id.append(pid)
+        seen.append(config)
+        # 훈련 중인 정책(첫 번째로 보는 id)보다 재적재된 후보(다른 id)가 항상 더 높은 점수를
+        # 받게 한다 — `_metric(cand_evs) > _metric(final_evs)` 가 항상 참이 되어 후보 재평가
+        # 분기가 후보를 선택하고, 그 선택이 `summary["best_step"] != summary["steps"]` 로
+        # 겉에서도 확인된다(아래).
+        score = 90.0 if pid == first_policy_id[0] else 99.0
+        return {"goal_rate": 1.0, "mean_score": score, "mean_score_raw": score,
+                "mean_score_completed": score, "mean_reward": 50.0, "episodes": []}
+
+    def fake_evaluate_teacher(boards, seeds=None, config=None):
+        return {"goal_rate": 1.0, "mean_score": 95.0, "mean_score_raw": 95.0,
+                "mean_score_completed": 95.0, "mean_reward": 60.0, "episodes": []}
+
+    monkeypatch.setattr(module, "evaluate_policy", fake_evaluate_policy)
+    monkeypatch.setattr(module, "evaluate_teacher", fake_evaluate_teacher)
+
+    import sys
+    old_argv = sys.argv
+    try:
+        sys.argv = ["train_ppo.py", "--smoke", "--out", str(tmp_path / "run"), "--seed", "0",
+                   "--comfort-steer", "-0.02"]
+        assert module.main() == 0
+    finally:
+        sys.argv = old_argv
+
+    printed = capsys.readouterr().out.strip().splitlines()
+    summary = json.loads(printed[-1])
+    # 후보 재평가 분기(`best_step is not None and best_step != step`)가 실제로 돌고 후보가
+    # 선택까지 됐는지 확인 — 안 그러면 `chosen_step` 이 그냥 최종 스텝으로 남아 이 테스트가
+    # 그 자리를 안 밟은 채 통과해 버려 잠금이 안 된다.
+    assert summary["best_step"] != summary["steps"], summary
+
+    expected = module.EnvConfig(world=module.WorldConfig(time_limit_scale=0.1),
+                                reward=module.RewardConfig(comfort_steer=-0.02))
+    assert seen, "evaluate_policy 가 한 번도 안 불렸다"
+    assert all(c == expected for c in seen), seen
+
+
+@pytest.mark.slow
 def test_entropy_mode_스모크_실행에서_학습_정책까지_실제로_닿는다(tmp_path):
     """단위 테스트(위 세 개)는 `_apply_entropy_mode` 자체를 직접 부르지만, `main()` 이
 
@@ -663,6 +731,25 @@ def test_log_std_max_덮어쓰기가_저장되는_cfg에도_반영된다(tmp_pat
 
     # 상한을 내리면 그 자리에서 σ 가 눌려야 한다(clamp_log_std 호출 확인).
     assert float(out.policy.log_std.max()) <= -0.6 + 1e-6
+
+
+def test_log_std_max_덮어쓰기가_상한_위의_값을_실제로_누른다():
+    """`_apply_log_std_max` 의 `net.clamp_log_std()` 호출 자체를 잠근다.
+
+    M4d 최종 리뷰 Important #1: `net.clamp_log_std()` 줄을 지워도 이 파일의 테스트 32개가
+    전부 통과했다 — 새로 만든 `ActorCritic()` 은 `log_std_init=-1.0`(`PolicyConfig` 기본값)
+    이라 이미 대부분의 상한보다 낮고, `test_log_std_max_덮어쓰기가_저장되는_cfg에도_반영된다`
+    의 `assert float(out.policy.log_std.max()) <= -0.6 + 1e-6` 은 clamp 가 없어도 공허하게
+    참이다. 여기서는 `log_std` 를 새 상한(-0.6)보다 **위**로 직접 올려놓은 뒤 불러 실제로
+    눌리는지 본다 — `net.clamp_log_std()` 를 지우면 값이 0.3 에 그대로 남는다.
+    """
+    module = _load_train_ppo_module()
+    net = ActorCritic()
+    net.policy.log_std.data.fill_(0.3)          # 새 상한(-0.6)보다 훨씬 위
+    assert float(net.policy.log_std.max()) > -0.6
+
+    out = module._apply_log_std_max(net, -0.6)
+    assert float(out.policy.log_std.max()) <= -0.6 + 1e-6, "clamp_log_std() 가 안 불렸다"
 
 
 def test_log_std_max가_None이면_정책을_안_건드린다():
