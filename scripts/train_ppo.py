@@ -268,6 +268,13 @@ def _build_parser() -> argparse.ArgumentParser:
                          "정책 이동이 함께 커져 원인을 못 갈랐다 — 끝난 체크포인트의 σ 를 낮춰선 "
                          "못 잰다(결정적 평가는 log_std 를 안 본다). 이 값을 조이고 다시 학습하는 "
                          "것이 그 개입이다.")
+    # M4e — 정체(stall) 진단(docs/reports/m4e-stall.md): PPO 는 E[R(tanh(μ+σξ))] 를 최대화한다 —
+    # σ 가 크면 목적함수가 잡음 섞인 궤적들의 성적에 지배돼 평균 자신의 형편없는 성적이 안
+    # 보인다. 후반에 σ 를 하한으로 몰면 목적함수가 곧 결정적 정책의 성적이 되어 제동해 멈추는
+    # 평균이 비로소 벌을 받는다. 기본값 None 은 안 함(기존 동작 불변).
+    ap.add_argument("--sigma-anneal-from", type=int, default=None,
+                    help="이 스텝부터 학습 끝(--steps)까지 log_std 를 어닐링 시작 시점 값에서 "
+                         "log_std_min 까지 선형으로 내린다. 기본값 None 은 안 함.")
     return ap
 
 
@@ -350,6 +357,18 @@ def _apply_log_std_max(net: ActorCritic, log_std_max: float | None) -> ActorCrit
     return net
 
 
+def _sigma_anneal_target(step: int, start: int | None, total: int, cur: float, floor: float):
+    """σ 어닐링의 이번 걸음 목표값. 안 켰거나 아직 시작 전이면 `None`(건드리지 않는다).
+
+    `start` 부터 `total` 까지 `cur`(어닐링 시작 시점의 값)에서 `floor` 까지 선형으로 내린다.
+    """
+    if start is None or step < start:
+        return None
+    span = max(total - start, 1)
+    t = min(max((step - start) / span, 0.0), 1.0)
+    return cur + (floor - cur) * t
+
+
 def main():
     ap = _build_parser()
     a = ap.parse_args()
@@ -417,6 +436,9 @@ def main():
         updates = 0
         prev_done = np.zeros(a.envs, dtype=bool)   # 직전 걸음에 끝난 환경 = 이번 걸음은 자동 리셋 더미
         step = 0
+        # M4e σ 어닐링 — 어닐링이 시작된 시점의 log_std 를 한 번만 기억해 둔다. 매 걸음 현재값을
+        # `_sigma_anneal_target` 의 `cur` 로 넘기면 선형이 아니라 지수 감쇠가 된다(계획서 경고).
+        sigma_anneal_cur = None
         next_eval = a.eval_every
         best_step, best_metric = None, None
         # 롤아웃 256걸음 × 환경 30개 = 7680 환경-걸음인데 판은 2500~5000걸음이라 롤아웃마다
@@ -496,6 +518,18 @@ def main():
             for p in net.policy.parameters():
                 p.requires_grad_(True)
             updates += 1
+
+            # M4e σ 어닐링 — ppo.update() 의 opt.step()/clamp_log_std() 규약과 같은 자리(최적화가
+            # 끝난 뒤)에서, 켜져 있으면 목표값으로 log_std 를 덮어쓴다. `sigma_anneal_cur` 는
+            # 어닐링이 시작된 첫 롤아웃에서 딱 한 번만 채운다 — 매 걸음 현재값을 쓰면 목표가
+            # 현재값을 따라가며 지수 감쇠가 되어 스케줄이 달라진다(계획서 경고).
+            if (a.sigma_anneal_from is not None and step >= a.sigma_anneal_from
+                    and sigma_anneal_cur is None):
+                sigma_anneal_cur = float(net.policy.log_std.detach().max())
+            sigma_target = _sigma_anneal_target(step, a.sigma_anneal_from, a.steps,
+                                                sigma_anneal_cur, net.policy.cfg.log_std_min)
+            if sigma_target is not None:
+                net.policy.set_log_std(sigma_target)
 
             # 롤아웃마다 가벼운 진단 줄을 남긴다 — 평가(비싸다)를 기다리면 3M 실행에 약
             # 6줄뿐이라 M4a 가 무너진 1M~1.5M 구간을 점 2개로만 보게 된다(2026-09-22 리뷰

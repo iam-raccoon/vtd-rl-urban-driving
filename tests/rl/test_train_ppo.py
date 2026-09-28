@@ -757,3 +757,40 @@ def test_log_std_max가_None이면_정책을_안_건드린다():
     net = ActorCritic()
     out = module._apply_log_std_max(net, None)
     assert out is net and out.policy.cfg.log_std_max == 0.5
+
+
+def test_sigma_anneal_기본값은_None이라_아무_일도_안_한다():
+    mod = _load_train_ppo_module()
+    a = mod._build_parser().parse_args(["--out", "/tmp/x", "--steps", "1"])
+    assert a.sigma_anneal_from is None
+
+
+def test_sigma_anneal_스케줄이_시작전엔_그대로_끝엔_하한이다():
+    """`_sigma_anneal_target(step, start, total, cur, floor)` 의 값을 직접 잠근다."""
+    mod = _load_train_ppo_module()
+    f = mod._sigma_anneal_target
+    assert f(step=100, start=1000, total=2000, cur=-0.5, floor=-2.0) is None   # 아직 아님
+    assert f(step=1000, start=1000, total=2000, cur=-0.5, floor=-2.0) == pytest.approx(-0.5)
+    assert f(step=1500, start=1000, total=2000, cur=-0.5, floor=-2.0) == pytest.approx(-1.25)
+    assert f(step=2000, start=1000, total=2000, cur=-0.5, floor=-2.0) == pytest.approx(-2.0)
+    assert f(step=9999, start=1000, total=2000, cur=-0.5, floor=-2.0) == pytest.approx(-2.0)
+
+
+@pytest.mark.slow
+def test_sigma_anneal을_주면_끝에서_하한에_닿는다(tmp_path):
+    import json
+    import os
+    import subprocess
+    repo = os.path.join(os.path.dirname(__file__), "..", "..")
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    out = subprocess.run(
+        [os.path.join(repo, ".venv", "bin", "python"),
+         os.path.join(repo, "scripts", "train_ppo.py"),
+         "--out", str(tmp_path / "run"), "--smoke", "--steps", "4000",
+         "--sigma-anneal-from", "1000"],
+        capture_output=True, text=True, env=env, cwd=repo, timeout=1800)
+    assert out.returncode == 0, out.stderr[-3000:]
+    rows = [json.loads(x) for x in open(tmp_path / "run" / "log.jsonl") if x.strip()]
+    assert rows, "로그가 비었다"
+    assert max(rows[-1]["log_std"]) == pytest.approx(-2.0, abs=0.05), rows[-1]["log_std"]

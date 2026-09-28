@@ -88,6 +88,17 @@ class DrivePolicy(nn.Module):
         """최적화 한 걸음 뒤에 부른다 — 범위는 지키되 기울기는 살려 둔다."""
         self.log_std.clamp_(self.cfg.log_std_min, self.cfg.log_std_max)
 
+    @torch.no_grad()
+    def set_log_std(self, value: float):
+        """`log_std` 를 통째로 `value` 로 덮어쓰고 범위 안에 눌러 준다.
+
+        M4e 의 σ 어닐링이 쓴다 — PPO 는 `E[R(tanh(μ+σξ))]` 를 최대화하므로 σ 가 크면 평균
+        자체가 좋을 필요가 없다. 후반에 σ 를 바닥으로 몰아 최적화 대상을 결정적 모드에
+        수렴시킨다. `forward()` 는 여전히 clamp 하지 않는다(기울기를 죽인다) — 여기서만 쓴다.
+        """
+        self.log_std.fill_(float(value))
+        self.clamp_log_std()
+
     def _dists(self, vec, objs, mask):
         mean, log_std, logits = self(vec, objs, mask)
         normal = torch.distributions.Normal(mean, log_std.exp())

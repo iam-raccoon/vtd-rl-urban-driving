@@ -89,6 +89,23 @@ def test_log_std_min_은_저장하고_불러와도_남는다(tmp_path):
     assert other.cfg.log_std_min == -3.5
 
 
+def test_set_log_std가_값을_덮어쓰고_범위에_넣는다():
+    net = DrivePolicy(PolicyConfig(trunk=(32, 32)))
+    net.set_log_std(-1.5)
+    assert torch.allclose(net.log_std, torch.tensor([-1.5, -1.5]))
+    net.set_log_std(-99.0)                      # 하한 아래
+    assert torch.allclose(net.log_std, torch.full((2,), net.cfg.log_std_min))
+    net.set_log_std(99.0)                       # 상한 위
+    assert torch.allclose(net.log_std, torch.full((2,), net.cfg.log_std_max))
+
+
+def test_set_log_std는_기울기를_안_남긴다():
+    net = DrivePolicy(PolicyConfig(trunk=(32, 32)))
+    net.set_log_std(-1.5)
+    assert net.log_std.grad is None
+    assert net.log_std.requires_grad          # 파라미터인 것은 그대로다
+
+
 def test_완전히_마스크된_물체는_마스크_보호장치를_핀한다():
     """마스크 보호장치(torch.where)가 필요함을 직접 검증.
 
