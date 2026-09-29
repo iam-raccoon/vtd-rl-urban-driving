@@ -284,11 +284,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _build_cfg(a) -> PPOConfig:
-    """`PPOConfig` 는 frozen dataclass 라 `dataclasses.replace` 로 CLI 로 연 네 필드만 덮어쓴다.
+    """`PPOConfig` 는 frozen dataclass 라 `dataclasses.replace` 로 CLI 로 연 **여섯** 필드만 덮어쓴다.
 
-    인자를 하나도 안 주면 `a.lr`/`a.entropy_coef`/`a.target_kl`/`a.imitation_half_life` 가 이미
-    `PPOConfig()` 자신의 기본값이므로(위 `_build_parser` 참고) 이 함수가 만드는 `cfg` 는
-    `PPOConfig()` 와 완전히 같다 — 기본 동작이 안 바뀐다.
+    `lr`·`entropy_coef`·`target_kl`·`imitation_half_life`·`imitation_sigma`·`imitation_floor`.
+    인자를 하나도 안 주면 이 여섯이 전부 `PPOConfig()` 자신의 기본값이므로(위 `_build_parser`
+    참고) 이 함수가 만드는 `cfg` 는 `PPOConfig()` 와 완전히 같다 — 기본 동작이 안 바뀐다.
+
+    (2026-09-29 리뷰: "네 필드" 로 적혀 있었다 — `imitation_sigma` 가 늘 때부터 낡았고
+     `imitation_floor` 가 늘 때도 안 고쳤다. 필드를 더하면 이 줄도 같이 고쳐야 한다.)
     """
     return dataclasses.replace(PPOConfig(), lr=a.lr, entropy_coef=a.entropy_coef,
                                target_kl=a.target_kl, imitation_half_life=a.imitation_half_life,

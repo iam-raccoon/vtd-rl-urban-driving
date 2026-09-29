@@ -826,14 +826,18 @@ def test_sigma_anneal이_선형이다_지수가_아니다(tmp_path):
     out = subprocess.run(
         [os.path.join(repo, ".venv", "bin", "python"),
          os.path.join(repo, "scripts", "train_ppo.py"),
+         # ⚠ `--smoke` 는 `--steps` 를 무조건 4000 으로 덮어쓴다(`train_ppo.py` 의 smoke 분기).
+         # 그래서 어닐링 창은 [2000, 4000] 이고 그 안에 약 16 줄이 남는다 — 판정엔 충분하다.
          "--out", str(tmp_path / "run"), "--smoke", "--steps", "12000",
          "--sigma-anneal-from", "2000"],
         capture_output=True, text=True, env=env, cwd=repo, timeout=1800)
     assert out.returncode == 0, out.stderr[-3000:]
     rows = [json.loads(x) for x in open(tmp_path / "run" / "log.jsonl") if x.strip()]
     floor = -2.0                       # PolicyConfig.log_std_min
-    # 양 끝 두 줄은 뺀다 — 어닐링이 시작된 첫 줄은 구간이 잘려 기울기가 다르고,
-    # 바닥에 눌린 줄은 clamp 때문에 선형에서 벗어난다. 그 사이만 본다.
+    # 바닥에 눌린 줄은 뺀다 — clamp 뒤로는 평탄해서 진짜 곡률과 섞인다.
+    # (2026-09-29 리뷰 실측 정정: 어닐링 **첫 줄도 이미 선형 위에 있다** — 처음엔 "구간이
+    #  잘려 기울기가 다르다" 고 보고 하나 더 뺐는데, 그 줄의 1 차 차분 편차도 다른 줄과
+    #  같은 float32 1 ULP 수준이었다. 그래도 남은 줄이 넉넉해 보수적으로 계속 뺀다.)
     inside = [r for r in rows if r["step"] > 2000 and max(r["log_std"]) > floor + 1e-6]
     inside = inside[1:]
     assert len(inside) >= 4, f"어닐링 창 안 줄이 너무 적다: {len(inside)}"
