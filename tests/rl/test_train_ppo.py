@@ -803,3 +803,44 @@ def test_imitation_floor_인자가_PPOConfig에_반영된다():
     assert a.imitation_floor == pytest.approx(0.25)
     cfg = mod._build_cfg(a)
     assert cfg.imitation_floor == pytest.approx(0.25)
+
+
+@pytest.mark.slow
+def test_sigma_anneal이_선형이다_지수가_아니다(tmp_path):
+    """어닐링 창 안에서 `log_std` 가 **스텝에 선형**이어야 한다(2 차 차분 ≈ 0).
+
+    `_sigma_anneal_target` 의 `cur` 은 **어닐링이 시작된 시점의 값을 한 번 기억**해 쓴다.
+    매 걸음 현재값을 넣으면 같은 식이 **지수 감쇠**가 된다 — 끝점(`floor`)은 같으므로
+    마지막 줄만 보는 단언으로는 원리상 못 가른다(2026-09-29 구현자 실측). 곡률로 가른다.
+
+    `set_log_std()` 가 값을 통째로 덮어쓰므로 스케줄은 기울기 잡음과 무관하게 결정적이고,
+    롤아웃마다 스텝 증가량이 같아 2 차 차분이 곧 곡률이다.
+    """
+    import json
+    import os
+    import subprocess
+
+    repo = os.path.join(os.path.dirname(__file__), "..", "..")
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    out = subprocess.run(
+        [os.path.join(repo, ".venv", "bin", "python"),
+         os.path.join(repo, "scripts", "train_ppo.py"),
+         "--out", str(tmp_path / "run"), "--smoke", "--steps", "12000",
+         "--sigma-anneal-from", "2000"],
+        capture_output=True, text=True, env=env, cwd=repo, timeout=1800)
+    assert out.returncode == 0, out.stderr[-3000:]
+    rows = [json.loads(x) for x in open(tmp_path / "run" / "log.jsonl") if x.strip()]
+    floor = -2.0                       # PolicyConfig.log_std_min
+    # 양 끝 두 줄은 뺀다 — 어닐링이 시작된 첫 줄은 구간이 잘려 기울기가 다르고,
+    # 바닥에 눌린 줄은 clamp 때문에 선형에서 벗어난다. 그 사이만 본다.
+    inside = [r for r in rows if r["step"] > 2000 and max(r["log_std"]) > floor + 1e-6]
+    inside = inside[1:]
+    assert len(inside) >= 4, f"어닐링 창 안 줄이 너무 적다: {len(inside)}"
+
+    v = [max(r["log_std"]) for r in inside]
+    d1 = [b - a for a, b in zip(v, v[1:])]
+    d2 = [b - a for a, b in zip(d1, d1[1:])]
+    # 선형이면 2 차 차분이 정확히 0(부동소수 오차만), 지수면 눈에 띄게 크다.
+    assert max(abs(x) for x in d2) < 1e-6, (v, d2)
+    assert v[0] > v[-1], "어닐링이 내려가지 않았다"
