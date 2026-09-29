@@ -365,15 +365,21 @@ def _apply_log_std_max(net: ActorCritic, log_std_max: float | None) -> ActorCrit
     return net
 
 
-def _sigma_anneal_target(step: int, start: int | None, total: int, cur: float, floor: float):
+def _sigma_anneal_target(step: int, start: int | None, total: int, cur, floor: float):
     """σ 어닐링의 이번 걸음 목표값. 안 켰거나 아직 시작 전이면 `None`(건드리지 않는다).
 
     `start` 부터 `total` 까지 `cur`(어닐링 시작 시점의 값)에서 `floor` 까지 선형으로 내린다.
+
+    `cur` 은 **스칼라 또는 축별 시퀀스(길이 2)** 둘 다 받고 **넣은 모양 그대로** 돌려준다 —
+    축별이면 각 축이 **자기 현재값에서** 하한까지 따로 내려간다. M4e 는 두 축을 `.max()`
+    하나로 묶어 내려서 이미 하한에 있던 조향축이 오히려 **6.2 배 폭증**했다.
     """
     if start is None or step < start:
         return None
     span = max(total - start, 1)
     t = min(max((step - start) / span, 0.0), 1.0)
+    if isinstance(cur, (list, tuple)):
+        return [c + (floor - c) * t for c in cur]
     return cur + (floor - cur) * t
 
 
@@ -533,7 +539,13 @@ def main():
             # 현재값을 따라가며 지수 감쇠가 되어 스케줄이 달라진다(계획서 경고).
             if (a.sigma_anneal_from is not None and step >= a.sigma_anneal_from
                     and sigma_anneal_cur is None):
-                sigma_anneal_cur = float(net.policy.log_std.detach().max())
+                # M4f — **축별**로 기억한다. M4e 는 여기서 `.max()` 로 한 값만 잡아
+                # `set_log_std` 가 두 축을 그 값으로 채웠다. 시작 시점이
+                # `[-2.000, -0.175]` 이었으므로 조향 σ 가 e^-2.0 → e^-0.175 로 **6.2 배
+                # 폭증**하며 어닐링이 시작됐고(리턴 +17.7 → -53.5), 그 팔이 통째로
+                # 무효가 됐다(`docs/reports/m4e-ppo-notes.md`). 축마다 자기 현재값에서
+                # 하한까지 내려가야 한다 — 그것이 원래 의도였다.
+                sigma_anneal_cur = net.policy.log_std.detach().cpu().tolist()
             sigma_target = _sigma_anneal_target(step, a.sigma_anneal_from, a.steps,
                                                 sigma_anneal_cur, net.policy.cfg.log_std_min)
             if sigma_target is not None:

@@ -106,6 +106,32 @@ def test_set_log_std는_기울기를_안_남긴다():
     assert net.log_std.requires_grad          # 파라미터인 것은 그대로다
 
 
+def test_set_log_std가_축별_값을_받는다():
+    """★ M4e 를 무효로 만든 자리 — 두 축을 한 스칼라로 덮어쓰면 낮은 축의 σ 가 폭증한다.
+
+    시작 시점 `log_std = [-2.000, -0.175]` 에서 두 축을 `.max()` 하나로 채워 **조향 σ 가
+    6.2 배 뛰었다**(`docs/reports/m4e-ppo-notes.md`). 축별로 받아야 한다.
+    """
+    net = DrivePolicy(PolicyConfig(trunk=(32, 32)))
+    net.set_log_std([-1.5, -0.5])
+    assert torch.allclose(net.log_std, torch.tensor([-1.5, -0.5]))
+    net.set_log_std(torch.tensor([-0.7, -1.9]))
+    assert torch.allclose(net.log_std, torch.tensor([-0.7, -1.9]))
+
+
+def test_set_log_std_스칼라는_예전처럼_두_축을_같게():
+    net = DrivePolicy(PolicyConfig(trunk=(32, 32)))
+    net.set_log_std(-1.25)
+    assert torch.allclose(net.log_std, torch.tensor([-1.25, -1.25]))
+
+
+def test_set_log_std_축별도_범위에_눌린다():
+    net = DrivePolicy(PolicyConfig(trunk=(32, 32)))
+    net.set_log_std([-99.0, 99.0])
+    assert torch.allclose(net.log_std,
+                          torch.tensor([net.cfg.log_std_min, net.cfg.log_std_max]))
+
+
 def test_완전히_마스크된_물체는_마스크_보호장치를_핀한다():
     """마스크 보호장치(torch.where)가 필요함을 직접 검증.
 

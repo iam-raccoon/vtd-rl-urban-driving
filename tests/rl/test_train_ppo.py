@@ -796,6 +796,74 @@ def test_sigma_anneal을_주면_끝에서_하한에_닿는다(tmp_path):
     assert max(rows[-1]["log_std"]) == pytest.approx(-2.0, abs=0.05), rows[-1]["log_std"]
 
 
+def test_sigma_anneal_목표가_축별로_따로_내려간다():
+    """★ M4e 를 무효로 만든 자리 — 축마다 **자기 현재값**에서 하한까지 가야 한다.
+
+    M4e 는 두 축의 `.max()` 하나로 둘 다 덮어써서, 시작 시점 `[-2.000, -0.175]` 에서
+    **조향 σ 가 6.2 배 폭증**하며 어닐링이 시작됐다. 그 충격이 리턴을 무너뜨렸고
+    실험 한 팔이 통째로 무효가 됐다.
+    """
+    mod = _load_train_ppo_module()
+    cur = [-2.0, -0.2]
+    start, total, floor = 1000, 2000, -2.0
+    assert mod._sigma_anneal_target(1000, start, total, cur, floor) == pytest.approx([-2.0, -0.2])
+    mid = mod._sigma_anneal_target(1500, start, total, cur, floor)
+    assert mid == pytest.approx([-2.0, -1.1])          # 조향은 이미 하한이라 안 움직인다
+    assert mod._sigma_anneal_target(2000, start, total, cur, floor) == pytest.approx([-2.0, -2.0])
+
+
+def test_sigma_anneal_스칼라_cur_은_예전과_같다():
+    mod = _load_train_ppo_module()
+    f = mod._sigma_anneal_target
+    assert f(100, 1000, 2000, -0.5, -2.0) is None
+    assert f(1500, 1000, 2000, -0.5, -2.0) == pytest.approx(-1.25)
+
+
+@pytest.mark.slow
+def test_sigma_anneal이_조향_시그마를_올리지_않는다(tmp_path):
+    """어닐링 구간에서 **어느 축도 시작값보다 커지면 안 된다** — M4e 의 실패를 직접 잠근다.
+
+    **두 축이 벌어진 체크포인트에서 시작한다**(`--init`). 스모크를 맨 처음부터 돌리면 4000
+    스텝 동안 두 축이 0.005 밖에 안 벌어져(2026-09-29 실측: 끝 `[-1.0256, -1.0226]`),
+    `.max()` 로 덮어써도 낮은 축이 0.005 올라갈 뿐이라 **버그를 심어도 이 테스트가 통과한다.**
+    그래서 M4e 가 실제로 마주쳤던 시작값 `[-2.000, -0.175]` 을 체크포인트로 만들어 쓴다 —
+    저 상태에서 `.max()` 로 덮으면 조향축이 **1.8 이나 뛴다**(σ 6.2 배). 체크포인트는 테스트가
+    직접 만든다(`runs/` 를 읽으면 머신마다 달라 skip 이 조용히 항상 참이 된다).
+    """
+    import json
+    import os
+    import subprocess
+
+    from vtd_rl.policy.net import DrivePolicy, PolicyConfig
+
+    repo = os.path.join(os.path.dirname(__file__), "..", "..")
+    init = DrivePolicy(PolicyConfig())
+    with torch.no_grad():
+        init.log_std.copy_(torch.tensor([-2.0, -0.175]))   # M4e 어닐링 시작 시점 실측값
+    init_path = tmp_path / "init.pt"
+    init.save(str(init_path))
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    out = subprocess.run(
+        [os.path.join(repo, ".venv", "bin", "python"),
+         os.path.join(repo, "scripts", "train_ppo.py"),
+         "--out", str(tmp_path / "run"), "--smoke", "--sigma-anneal-from", "2000",
+         "--init", str(init_path)],
+        capture_output=True, text=True, env=env, cwd=repo, timeout=1800)
+    assert out.returncode == 0, out.stderr[-3000:]
+    rows = [json.loads(x) for x in open(tmp_path / "run" / "log.jsonl") if x.strip()]
+    before = [r for r in rows if r["step"] < 2000]
+    after = [r for r in rows if r["step"] >= 2000]
+    assert before and after
+    # 어닐링 시작 직전까지의 축별 최댓값을 천장으로 삼는다. 여유 0.05 는 캡처 직전 한 번의
+    # PPO 업데이트(엔트로피 보너스가 σ 를 조금 올린다)를 견디려는 것이지 버그를 봐주려는 게
+    # 아니다 — M4e 의 실제 폭증은 **1.82**(log_std -2.000 → -0.175)로 이 여유의 36 배다.
+    base = [max(r["log_std"][ax] for r in before) for ax in (0, 1)]
+    for r in after:
+        for ax in (0, 1):
+            assert r["log_std"][ax] <= base[ax] + 0.05, (ax, r["step"], r["log_std"], base)
+
+
 def test_imitation_floor_인자가_PPOConfig에_반영된다():
     mod = _load_train_ppo_module()
     a = mod._build_parser().parse_args(

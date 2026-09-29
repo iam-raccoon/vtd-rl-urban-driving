@@ -89,14 +89,20 @@ class DrivePolicy(nn.Module):
         self.log_std.clamp_(self.cfg.log_std_min, self.cfg.log_std_max)
 
     @torch.no_grad()
-    def set_log_std(self, value: float):
-        """`log_std` 를 통째로 `value` 로 덮어쓰고 범위 안에 눌러 준다.
+    def set_log_std(self, value):
+        """`log_std` 를 `value` 로 덮어쓰고 범위 안에 눌러 준다.
 
-        M4e 의 σ 어닐링이 쓴다 — PPO 는 `E[R(tanh(μ+σξ))]` 를 최대화하므로 σ 가 크면 평균
-        자체가 좋을 필요가 없다. 후반에 σ 를 바닥으로 몰아 최적화 대상을 결정적 모드에
-        수렴시킨다. `forward()` 는 여전히 clamp 하지 않는다(기울기를 죽인다) — 여기서만 쓴다.
+        `value` 가 스칼라면 두 축을 같게, **길이 2 면 축별로** 채운다. 축별이 기본 쓰임이다 —
+        M4e 에서 두 축을 `.max()` 하나로 덮어썼다가 시작 시점 `[-2.000, -0.175]` 에서
+        **조향 σ 가 6.2 배 폭증**해(e^-2.0 → e^-0.175) 실험 한 팔이 통째로 무효가 됐다
+        (`docs/reports/m4e-ppo-notes.md`).
+
+        σ 어닐링이 쓴다 — PPO 는 `E[R(tanh(μ+σξ))]` 를 최대화하므로 σ 가 크면 평균 자체가
+        좋을 필요가 없다. 후반에 σ 를 바닥으로 몰아 최적화 대상을 결정적 모드에 수렴시킨다.
+        `forward()` 는 여전히 clamp 하지 않는다(기울기를 죽인다) — 여기서만 누른다.
         """
-        self.log_std.fill_(float(value))
+        v = torch.as_tensor(value, dtype=self.log_std.dtype, device=self.log_std.device)
+        self.log_std.copy_(v.expand_as(self.log_std))
         self.clamp_log_std()
 
     def _dists(self, vec, objs, mask):
