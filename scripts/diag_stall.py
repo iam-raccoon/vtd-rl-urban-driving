@@ -41,6 +41,15 @@ from vtd_rl.world.board import load_curriculum  # noqa: E402
 
 STALL_TAIL = 100      # "정체 직전" 으로 보는 마지막 걸음 수(브리프 지정값)
 
+# 행동 벡터 `control` 의 축 순서. **근거는 `vtd_rl/env/action.py::to_command`(34~36 행)** —
+# `steer = control[0] * max_steer`, `accel = control[1] * (accel_max | accel_min)` 이다.
+# 이 둘이 뒤집히면 요약의 모양은 그대로인 채 진단만 통째로 거짓말을 한다(M4e 최종 리뷰가
+# 심은 돌연변이 ④ 가 그렇게 살아남았다). 그래서 리터럴 대신 상수로 올려 테스트로 잠근다.
+STEER_IDX = 0
+ACCEL_IDX = 1
+
+STALLED = "stalled"   # `info["outcome"]` 중 정체(속도 0 으로 멈춤) — 이 진단의 대상
+
 
 def load_policy(path: str, device):
     """`eval_det_vs_stoch.py::load_policy` 와 같은 판별법(모듈 docstring 참고)."""
@@ -70,14 +79,13 @@ def run_policy_episode_rows(env, net, board_name: str, seed: int, max_steps: int
     outcome = "running"
     for _ in range(max_steps):
         act = net.act(obs, deterministic=True)
+        # 대조군은 **같은 `obs`** 에서 뽑은 확률 표본이어야 한다 — `deterministic=False`.
+        # 결정적으로 뽑으면 `accel_det` 과 같은 값이 되어 "잡음이 문턱을 넘겨 주는가" 라는
+        # 질문 자체가 사라진다(M4e 최종 리뷰 돌연변이 ⑥).
         smp = net.act(obs, deterministic=False, generator=gen)
-        rows.append({
-            "accel_det": float(act["control"][1]), "accel_sample": float(smp["control"][1]),
-            "steer_det": float(act["control"][0]), "steer_sample": float(smp["control"][0]),
-            # ego 벡터 0 번 = _clip(ego.v, cfg.v_max) — v_max(기본 25 m/s)로 나눈 **정규화** 값
-            # ([-1, 1] 로 clip). 실제 m/s 가 아니다(vtd_rl/env/observation.py:86).
-            "speed_norm": float(obs["ego"][0]),
-        })
+        # ego 벡터 0 번 = _clip(ego.v, cfg.v_max) — v_max(기본 25 m/s)로 나눈 **정규화** 값
+        # ([-1, 1] 로 clip). 실제 m/s 가 아니다(vtd_rl/env/observation.py:86).
+        rows.append(_action_row(act, smp, obs["ego"][0]))
         obs, _r, term, trunc, info = env.step(act)
         if term or trunc:
             outcome = info["outcome"]
@@ -100,7 +108,8 @@ def run_teacher_episode_rows(env, board_name: str, seed: int, max_steps: int) ->
     try:
         for _ in range(max_steps):
             act = policy.act()
-            rows.append({"accel": float(act["control"][1]), "steer": float(act["control"][0])})
+            rows.append({"accel": float(act["control"][ACCEL_IDX]),
+                         "steer": float(act["control"][STEER_IDX])})
             _obs, _r, term, trunc, _info = env.step(act)
             if term or trunc:
                 break
@@ -109,11 +118,43 @@ def run_teacher_episode_rows(env, board_name: str, seed: int, max_steps: int) ->
     return rows
 
 
+def _action_row(act, smp, speed) -> dict:
+    """걸음 하나의 결정적 행동·확률 표본·전진 속도를 한 줄로 묶는다.
+
+    `act` 는 `net.act(obs, deterministic=True)`, `smp` 는 **같은 `obs`** 에서 뽑은 확률
+    표본이다. 축 순서는 `STEER_IDX`·`ACCEL_IDX` 주석 참고 — 여기서 두 칸이 바뀌면
+    "제동을 학습한다" 가 "조향을 학습한다" 로 조용히 둔갑한다.
+
+    `speed` 는 정규화된 `obs["ego"][0]` 이다(m/s 아님).
+    """
+    return {
+        "accel_det": float(act["control"][ACCEL_IDX]),
+        "accel_sample": float(smp["control"][ACCEL_IDX]),
+        "steer_det": float(act["control"][STEER_IDX]),
+        "steer_sample": float(smp["control"][STEER_IDX]),
+        "speed_norm": float(speed),
+    }
+
+
+def _stalled_only(episodes):
+    """판 목록에서 **정체로 끝난 판만** 고른다.
+
+    이 진단이 재려는 것은 "멈춘 판에서 무슨 일이 있었나" 다 — 필터가 반전되면 완주한
+    판의 가속을 '정체 직전 가속' 이라 부르게 된다(M4e 최종 리뷰 돌연변이 ⑤).
+    """
+    return [e for e in episodes if e["outcome"] == STALLED]
+
+
 def _mean(xs):
     return sum(xs) / len(xs) if xs else None
 
 
 def _tail(rows, key, n):
+    """`rows` 의 **뒤쪽** n 걸음에서 `key` 값을 뽑는다 — '멈추기 직전' 이 곧 뒤쪽이다.
+
+    앞쪽(`rows[:n]`)을 보면 출발 직후 가속을 정체 직전 값이라 부르게 된다
+    (M4e 최종 리뷰 돌연변이 ③). `n` 이 판 길이보다 크면 전부 준다.
+    """
     return [r[key] for r in rows[-n:]]
 
 
@@ -162,7 +203,7 @@ def main():
     teacher_accel = [r["accel"] for e in teacher_episodes for r in e["rows"]]
     teacher_steer = [r["steer"] for e in teacher_episodes for r in e["rows"]]
 
-    stalled = [e for e in episodes if e["outcome"] == "stalled"]
+    stalled = _stalled_only(episodes)
     tail_accel_det = [v for e in stalled for v in _tail(e["rows"], "accel_det", a.stall_tail)]
     tail_accel_sample = [v for e in stalled for v in _tail(e["rows"], "accel_sample", a.stall_tail)]
     tail_steer_det = [v for e in stalled for v in _tail(e["rows"], "steer_det", a.stall_tail)]
