@@ -289,3 +289,18 @@ def test_squashed_엔트로피는_generator를_받아_전역RNG와_무관하게_
     assert torch.equal(ls_a, ls_b)
     assert len(params_a) == len(params_b)
     assert all(torch.equal(a, b) for a, b in zip(params_a, params_b))
+
+
+def test_모방_계수에_바닥을_둘_수_있다():
+    cfg = PPOConfig(imitation_half_life=1_000_000, imitation_floor=0.2)
+    assert imitation_coef(0, cfg) == pytest.approx(1.0)
+    assert imitation_coef(1_000_000, cfg) == pytest.approx(0.5)
+    # 바닥 아래로 안 내려간다
+    assert imitation_coef(10_000_000, cfg) == pytest.approx(0.2)
+    assert imitation_coef(100_000_000, cfg) == pytest.approx(0.2)
+
+
+def test_모방_바닥_기본값은_0이라_예전과_같다():
+    cfg = PPOConfig(imitation_half_life=1_000_000)
+    assert cfg.imitation_floor == 0.0
+    assert imitation_coef(10_000_000, cfg) == pytest.approx(0.5 ** 10)

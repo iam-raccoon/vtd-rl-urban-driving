@@ -794,3 +794,12 @@ def test_sigma_anneal을_주면_끝에서_하한에_닿는다(tmp_path):
     rows = [json.loads(x) for x in open(tmp_path / "run" / "log.jsonl") if x.strip()]
     assert rows, "로그가 비었다"
     assert max(rows[-1]["log_std"]) == pytest.approx(-2.0, abs=0.05), rows[-1]["log_std"]
+
+
+def test_imitation_floor_인자가_PPOConfig에_반영된다():
+    mod = _load_train_ppo_module()
+    a = mod._build_parser().parse_args(
+        ["--out", "/tmp/x", "--steps", "1", "--imitation-floor", "0.25"])
+    assert a.imitation_floor == pytest.approx(0.25)
+    cfg = mod._build_cfg(a)
+    assert cfg.imitation_floor == pytest.approx(0.25)

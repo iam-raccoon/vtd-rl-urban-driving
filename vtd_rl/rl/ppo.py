@@ -26,6 +26,9 @@ class PPOConfig:
     imitation_coef0: float = 1.0
     imitation_half_life: int = 2_000_000
     imitation_sigma: str = "learn"   # "learn" | "detach" — detach 면 모방이 σ 를 안 건드린다
+    imitation_floor: float = 0.0    # 모방 계수가 이 값 아래로 안 내려간다. M4e: 출발점은
+                                     # 결정적으로 18/18 완주하는데 앵커가 사라지며 무너진다 —
+                                     # 앵커가 평균을 배포 가능한 곳에 붙들고 있었다는 가설.
     target_kl: float = 0.03
     # 가치 클리핑 폭은 정책 비율 클리핑(clip)과 별개다 — 이 환경의 리턴은 O(100)
     # (progress 100 · goal 50 · collision -50, 보상 정규화 없음, 스펙 §5)인데 비율용 0.2 를
@@ -58,7 +61,8 @@ def imitation_train_cfg(net, cfg: PPOConfig) -> TrainConfig:
 
 
 def imitation_coef(step: int, cfg: PPOConfig) -> float:
-    return cfg.imitation_coef0 * 0.5 ** (step / max(cfg.imitation_half_life, 1))
+    decayed = cfg.imitation_coef0 * 0.5 ** (step / max(cfg.imitation_half_life, 1))
+    return max(decayed, cfg.imitation_floor)
 
 
 def ppo_losses(net, batch, cfg: PPOConfig, generator=None):

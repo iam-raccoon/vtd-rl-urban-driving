@@ -236,6 +236,11 @@ def _build_parser() -> argparse.ArgumentParser:
                     default=default_cfg.imitation_sigma,
                     help="detach 면 모방 손실이 σ(log_std)를 안 건드린다 — 평균은 그대로 배운다."
                          " M4a 에서 모방이 σ 를 하한에 붙박아 조향 탐색이 없었다")
+    ap.add_argument("--imitation-floor", type=float, default=default_cfg.imitation_floor,
+                    help="모방 계수가 이 값 아래로 안 내려간다. 기본값 0.0 은 지금과 같다"
+                         "(바닥 없음). M4e — 출발점은 결정적으로 18/18 완주하는데 앵커가"
+                         " 사라지며 무너진다; 작은 바닥을 남겨 평균을 배포 가능한 곳에 계속"
+                         " 붙들어 두는 실험이다.")
     ap.add_argument("--entropy-mode", choices=ENTROPY_MODES, default=None,
                     help="정책의 entropy_mode(net.py PolicyConfig 참고)를 덮어쓴다. 기본값"
                          " None 은 체크포인트에 저장된 값을 그대로 쓴다(--init 이 없으면"
@@ -287,7 +292,7 @@ def _build_cfg(a) -> PPOConfig:
     """
     return dataclasses.replace(PPOConfig(), lr=a.lr, entropy_coef=a.entropy_coef,
                                target_kl=a.target_kl, imitation_half_life=a.imitation_half_life,
-                               imitation_sigma=a.imitation_sigma)
+                               imitation_sigma=a.imitation_sigma, imitation_floor=a.imitation_floor)
 
 
 def _build_reward_cfg(a) -> RewardConfig:
