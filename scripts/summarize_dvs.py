@@ -33,8 +33,17 @@ def parse_run(path: str):
     return m.group(1), int(m.group(2))
 
 
-def load(jsonl: str):
-    """`{(설정, 시드): {단계: {지표: 값}}}` 로 읽는다."""
+def load(jsonl: str, alias: dict | None = None):
+    """`{(설정, 시드): {단계: {지표: 값}}}` 로 읽는다.
+
+    `alias` 는 `{원래이름: 묶을이름}`. 같은 설정을 **다른 폴더 이름으로 나눠 돌렸을 때**
+    한 팔로 묶는 데 쓴다 — M4f 에서 기준선 시드 0~2 는 M4e 의 `m4d-align`, 시드 3~5 는
+    새로 돌린 `base` 라 이름이 다른데 **설정은 같다**(둘 다 개입 없음).
+
+    같은 (묶을이름, 시드) 가 둘 이상이면 **터뜨린다.** 조용히 덮어쓰면 어느 실행의 숫자가
+    성적표에 실렸는지 알 수 없게 된다.
+    """
+    alias = alias or {}
     out = {}
     with open(jsonl, encoding="utf-8") as f:
         for line in f:
@@ -42,7 +51,11 @@ def load(jsonl: str):
                 continue
             row = json.loads(line)
             name, seed = parse_run(row["checkpoint"])
-            out[(name, seed)] = {st: row[st] for st in STAGES if st in row}
+            key = (alias.get(name, name), seed)
+            if key in out:
+                raise SystemExit(f"같은 (설정, 시드) 가 두 번 나왔다: {key} — "
+                                 f"별칭이 서로 다른 실행을 겹쳐 덮고 있다")
+            out[key] = {st: row[st] for st in STAGES if st in row}
     return out
 
 
@@ -79,9 +92,17 @@ def main():
                     help="이 설정을 기준선으로 삼아 **시드로 짝지어** 차이와 부호검정 p 를 낸다")
     ap.add_argument("--metric", default="det_goal", choices=METRICS,
                     help="--pair 가 쓰는 지표(기본 det_goal — 배포되는 것은 평균 행동이다)")
+    ap.add_argument("--alias", action="append", default=[], metavar="원래이름=묶을이름",
+                    help="같은 설정을 다른 폴더 이름으로 나눠 돌렸을 때 한 팔로 묶는다(반복 가능)")
     a = ap.parse_args()
 
-    data = load(a.jsonl)
+    alias = {}
+    for item in a.alias:
+        if "=" not in item:
+            raise SystemExit(f"--alias 는 '원래이름=묶을이름' 꼴이어야 한다: {item!r}")
+        k, v = item.split("=", 1)
+        alias[k] = v
+    data = load(a.jsonl, alias)
     names = sorted({n for n, _ in data})
 
     print(f"# {os.path.basename(a.jsonl)} — 설정별 평균\n")

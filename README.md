@@ -76,6 +76,7 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 - [docs/reports/m4d-ppo.md](docs/reports/m4d-ppo.md) — 보상의 위반 항을 대회 채점기와 맞춘 뒤의 결과
 - [docs/reports/m4e-stall.md](docs/reports/m4e-stall.md) — 결정적 정책은 **왜** 멈추는가(진단)
 - [docs/reports/m4e-ppo.md](docs/reports/m4e-ppo.md) — 그 개입 둘의 결과(모방 앵커 바닥 대 σ 어닐링)
+- [docs/reports/m4f-ppo.md](docs/reports/m4f-ppo.md) — 개입 둘을 제대로 재고 **둘 다 기각**
 
 ### 여기까지 온 곳
 **PPO 는 아직 M3 모방 학생을 못 넘었다.** 목표 판정은 M4a 부터 지금까지 0/2 다. 다만 두 가지가 풀렸다.
@@ -89,9 +90,16 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 원인은 "가속이 모자라서" 가 아니라 **제동을 학습해서**다 — 정체 직전 100 걸음의 가속이 −0.81~−0.87 로
 거의 최대 제동이고, 학습이 진행될수록 평균 가속이 선생님(0.129) 아래 0 쪽으로 내려간다.
 
-모방 앵커에 바닥을 두면 3M 체크포인트의 결정적 완주율이 44.4% → 66.7% 로 올랐지만 **시드 3 개라 확증이
-아니다**(부호검정 p=0.25). σ 어닐링 팔은 구현 결함으로 **의도한 개입을 한 번도 재지 못했다.** 둘 다 M4f
-에서 다시 잰다: [docs/superpowers/plans/2026-09-29-m4f-sigma-per-axis.md](docs/superpowers/plans/2026-09-29-m4f-sigma-per-axis.md)
+그 병목에 개입 둘을 걸어 봤고(모방 앵커 바닥·σ 후반 어닐링) **M4f 에서 둘 다 기각됐다.** σ 어닐링은
+결정적 완주율을 단계① −27.8pp 떨어뜨리고, **확률적 완주율까지 100% → 81.5% 로 무너뜨린다.** 모방 바닥은
+M4e 가 시드 3 개에서 본 +22.2pp 가 **시드 6 개로 늘리자 사라졌다**(단계① −2.8pp, p=1.000).
+
+**σ 어닐링이 남긴 것이 지금 가장 쓸모 있는 단서다.** 정체 직전 구간에서 확률 표본은 평균보다 **+0.151
+만큼 덜 제동**하는데, σ 를 하한까지 몰면 그 여유가 **+0.005** 로 사라진다. 즉 **잡음은 탐색이 아니라
+정책을 정체에서 꺼내 주던 버팀목**이었고, 줄이면 나쁜 평균이 고쳐지는 게 아니라 드러난다.
+
+그리고 M4e·M4f 실행 **21 개 전부** 최선 체크포인트가 0.5M~1M 이다 — 3M 을 돌리는데 **나머지 2M 은 정책을
+나쁘게만 만든다.** 다음은 증상(정체)이 아니라 이것을 봐야 한다.
 
     env -u PYTHONPATH .venv/bin/python scripts/train_ppo.py --out runs/$(hostname)/$(date +%F)-ppo \
       --init <M3 체크포인트> --dagger-data <M3 데이터 폴더>

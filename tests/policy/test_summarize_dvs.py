@@ -86,6 +86,38 @@ def test_짝지을_시드가_없으면_평균끼리_비교하지_않는다(tmp_p
         assert "0.0" not in ln and "1.000" not in ln, ln
 
 
+def _write(tmp_path, spec):
+    """`spec` = [(설정이름, 시드, det_goal), ...] → JSONL 파일 경로."""
+    rows = [{
+        "checkpoint": f"runs/x/{name}-s{s}/ac-3002880.pt",
+        "stage1": {"det_goal": g, "sto_goal": 1.0,
+                   "det_score_completed": 90.0, "sto_score_completed": 90.0},
+        "stage2": {"det_goal": g, "sto_goal": 1.0,
+                   "det_score_completed": 90.0, "sto_score_completed": 90.0},
+    } for name, s, g in spec]
+    p = tmp_path / "dvs.jsonl"
+    p.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    return p
+
+
+def test_별칭이_다른_이름의_같은_설정을_한_팔로_묶는다(tmp_path):
+    """M4f 의 기준선은 시드 0~2 가 `m4d-align`, 시드 3~5 가 `base` 로 이름이 다르지만
+    **설정은 같다**(둘 다 개입 없음). 별칭으로 묶어야 n=6 짝짓기가 된다."""
+    m = _load()
+    p = _write(tmp_path, [("m4d-align", 0, 0.4), ("m4d-align", 1, 0.4),
+                          ("base", 2, 0.4), ("base", 3, 0.4)])
+    data = m.load(str(p), {"m4d-align": "base"})
+    assert sorted(k for k in data) == [("base", 0), ("base", 1), ("base", 2), ("base", 3)]
+
+
+def test_별칭이_서로_다른_실행을_덮으면_터진다(tmp_path):
+    """조용히 덮어쓰면 어느 실행의 숫자가 성적표에 실렸는지 알 수 없게 된다."""
+    m = _load()
+    p = _write(tmp_path, [("m4d-align", 0, 0.4), ("base", 0, 0.9)])   # 둘 다 시드 0
+    with pytest.raises(SystemExit, match="두 번"):
+        m.load(str(p), {"m4d-align": "base"})
+
+
 def test_겹치는_시드만_짝짓는다(tmp_path, capsys):
     m = _load()
     rows = []
