@@ -4,8 +4,15 @@ import json
 from dataclasses import dataclass, field
 
 from vtd_rl import rule_stack as rs
+from vtd_rl.world.place import actor_from_spec
 from vtd_rl.world.route import RouteIndex
 from vtd_rl.world.signals import SIGNAL_MODES
+
+#: 커리큘럼 최상위에서 허용하는 키. `stage` 는 기존 파일이 갖고 있어 받아만 주고 안 읽는다.
+CURRICULUM_KEYS = {"name", "signals", "boards", "stage"}
+
+#: 판 항목에서 허용하는 키.
+BOARD_KEYS = {"name", "route", "lane", "actors"}
 
 
 @dataclass
@@ -44,11 +51,31 @@ def _load_json(rel):
         return json.load(f)
 
 
+def _check_keys(d: dict, allowed: set, what: str):
+    """모르는 키를 **조용히 버리지 않는다**.
+
+    예전에는 `"actors"` 를 넣어도 오류 없이 무시됐다. 커리큘럼에 액터를 싣는 지금은
+    오타 하나가 액터 0 개인 판을 만들고, 그 판은 단계 ①② 와 구별이 안 된다 —
+    실험 한 팔이 통째로 무의미해진다.
+    """
+    unknown = sorted(set(d) - allowed)
+    if unknown:
+        raise ValueError(f"{what}에 모르는 키가 있다: {', '.join(unknown)} "
+                         f"(허용: {', '.join(sorted(allowed))})")
+
+
 def load_board(entry: dict, signals: str = "always_green") -> Board:
+    _check_keys(entry, BOARD_KEYS, f"판 항목 '{entry.get('name', '?')}'")
     sc = rs.Scenario.load(rs.path(entry["route"]))
     lane = _load_json(entry["lane"])["pts"]
     ego_lanes = _load_json(entry["route"]).get("ego_lanes") or []
-    return Board(entry["name"], sc, lane, signals, ego_lanes)
+    board = Board(entry["name"], sc, lane, signals, ego_lanes)
+    # 액터는 판을 먼저 지은 뒤에 만든다 — 경로-상대 좌표를 풀려면 `board.route` 가 필요하다.
+    actors = [actor_from_spec(board, spec) for spec in entry.get("actors") or []]
+    if actors:
+        # 경로 JSON 은 액터를 갖지 않는다(2026-09-30 확인). 그래도 있으면 덮지 않고 더한다.
+        sc.actors = list(sc.actors) + actors
+    return board
 
 
 def slice_board(board: Board, s_from: float, s_to: float, name: str, signals: str | None = None) -> Board:
@@ -78,4 +105,5 @@ def slice_board(board: Board, s_from: float, s_to: float, name: str, signals: st
 def load_curriculum(path: str):
     with open(path, encoding="utf-8") as f:
         d = json.load(f)
+    _check_keys(d, CURRICULUM_KEYS, f"커리큘럼 '{path}'")
     return d["name"], [load_board(e, d["signals"]) for e in d["boards"]]

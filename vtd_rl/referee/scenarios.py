@@ -17,6 +17,8 @@ from vtd_rl.drivers.scripted import (Cruise, LaneShift, Offset, ScriptedDriver, 
                                      StopAt, TeacherDriver)
 from vtd_rl.rollout import run_episode
 from vtd_rl.world.board import load_board, slice_board
+from vtd_rl.world.place import actor_from_spec
+from vtd_rl.world.place import route_point as _route_point
 
 KMH = 1 / 3.6
 FRONT = rs.score_fma.FRONT
@@ -53,15 +55,11 @@ def _script(speed, offset=None, signal=None):
                                     copy.deepcopy(signal) or SignalWindow(0, 0, 0))
 
 
-def _route_point(board, s, lateral):
-    x, y, h = board.route.point_at(s)
-    return x - lateral * math.sin(h), y + lateral * math.cos(h), h
-
-
 def _static(board, aid, kind, s, size):
-    x, y, _ = _route_point(board, s, 0.0)
-    return rs.Actor(id=aid, type=kind, size=list(size), spawn={"at_time": 0.0},
-                    motion={"kind": "static", "pos": [x, y]})
+    # 좌표 변환과 `hd`(방위) 주입은 `world/place.py` 가 한다 — 커리큘럼과 같은 길을 쓴다.
+    # 예전에는 `hd` 를 안 넣어 방위가 0 으로 고정됐다(`mock_vtd.py:46-52` 의 잠복 버그).
+    return actor_from_spec(board, {"id": aid, "kind": "static", "type": kind,
+                                   "s": s, "lateral": 0.0, "size": list(size)})
 
 
 def _scenario(name, board, make_driver, expect, note, forbid=()):
