@@ -111,6 +111,10 @@ def test_마스크는_마스크_배열에서만_온다():
     죽은 슬롯에 쓰레기가 남아 있어도(관측은 0 으로 채우지만 그건 `observation.py` 의
     약속일 뿐이다) 진단은 마스크만 봐야 한다. 반대로 값이 전부 0 인 **산** 슬롯
     (자차와 같은 자리)도 세어야 한다 — 값으로 추측하면 이 둘이 서로 바뀐다.
+
+    ⚠ 2026-09-30 돌연변이 M3: "0 이 아닌 줄을 센다" 로 바꿨더니 **살아남았다**.
+    산 1 + 죽은 1 짜리 예제는 두 세는 법이 우연히 같은 1 을 내기 때문이다. 그래서
+    아래처럼 **두 답이 갈리는** 두 판(2 대 0, 0 대 2)을 함께 둔다.
     """
     m = _load_diag_obs()
     from vtd_rl.env.observation import ObsConfig
@@ -121,6 +125,15 @@ def test_마스크는_마스크_배열에서만_온다():
     assert got["mask_sum"] == 1.0
     assert got["slot"] == 0
     assert got["range"] == pytest.approx(0.0)
+
+    # 값이 전부 0 인 산 슬롯 둘 — 마스크는 2, 내용으로 추측하면 0
+    allzero = m._obs_object(_obs([_slot(), _slot()], [1.0, 1.0]), cfg)
+    assert allzero["mask_sum"] == 2.0
+    assert allzero["slot"] == 0                    # 그래도 '가장 가까운 것' 은 고른다
+    # 값이 남은 죽은 슬롯 둘 — 마스크는 0, 내용으로 추측하면 2
+    allghost = m._obs_object(_obs([_slot(fx=0.5), _slot(fy=0.5)], [0.0, 0.0]), cfg)
+    assert allghost["mask_sum"] == 0.0
+    assert allghost["slot"] is None and allghost["fx"] is None
 
 
 def test_열_번호가_observation_레이아웃과_같다():
@@ -234,17 +247,22 @@ def test_blind_steps가_세계와_관측의_어긋남을_센다():
 
     세계엔 물체가 있는데(`world_n > 0`) 관측 마스크가 0 인 걸음 = 관측이 안 찬 걸음.
     반대 방향(`ghost_steps`)도 따로 센다 — 둘을 한 칸으로 묶으면 어느 쪽이 끊겼는지 모른다.
+
+    ⚠ 2026-09-30 돌연변이 M7: 조건을 `mask_sum > 0`(어긋남 대신 **일치**)로 뒤집었을 때
+    '어긋남 1, 일치 1' 짜리 예제는 **양쪽 다 1 을 내서** 아무 말을 안 했다. 그래서
+    일치 걸음을 하나 더 둬 두 답이 1 대 2 로 갈리게 한다.
     """
     m = _load_diag_obs()
     rows = _rows([(0, 0.0, 1.0, 0.0),    # 세계에도 관측에도 없다 — 어긋남 아님
-                  (1, 0.0, 1.0, 0.0),    # 세계엔 있는데 관측이 비었다 -> blind
-                  (1, 1.0, 1.0, 0.0),    # 둘 다 있다 — 정상
+                  (1, 0.0, 1.0, 0.0),    # 세계엔 있는데 관측이 비었다 -> blind (1 개뿐)
+                  (1, 1.0, 1.0, 0.0),    # 둘 다 있다 — 정상 (2 개)
+                  (1, 1.0, 1.0, 0.0),
                   (0, 1.0, 1.0, 0.0)])   # 관측에만 있다 -> ghost
     s = m.summarize(rows, "course_H", 0, "collision", "policy")
-    assert s["blind_steps"] == 1
+    assert s["blind_steps"] == 1         # 일치를 세는 구현이면 2 가 나온다
     assert s["ghost_steps"] == 1
-    assert s["world_seen_steps"] == 2
-    assert s["obs_seen_steps"] == 2
+    assert s["world_seen_steps"] == 3
+    assert s["obs_seen_steps"] == 3
 
 
 def test_요약이_물체_전후_행동을_가른다():
