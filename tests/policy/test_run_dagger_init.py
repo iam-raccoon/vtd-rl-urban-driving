@@ -129,8 +129,12 @@ def committed_report_guard():
         pytest.fail("실행이 커밋된 성적표 docs/reports/m3-dagger.md 를 덮어썼다 — 되돌렸다")
 
 
-BASE = ["--rounds", "1", "--seeds", "1", "--epochs", "1", "--eval-seeds", "1",
-        "--workers", "1", "--device", "cpu", "--stage", "stage1", "--eval-stage", "stage1"]
+#: 단계를 **하나도 안 주는** 최소 인자 — 기본 단계(수집 ①, 평가 ①②)로 도는 실행이다.
+#: 성적표 경로를 단계로 갈라 놓은 반쪽 가드는 이 실행에서만 드러난다(돌연변이 실험에서
+#: 실제로 살아남았다: `--stage` 를 줄 때만 안전하고 안 주면 커밋 문서로 가는 가드).
+MIN = ["--rounds", "1", "--seeds", "1", "--epochs", "1", "--eval-seeds", "1",
+       "--workers", "1", "--device", "cpu"]
+BASE = [*MIN, "--stage", "stage1", "--eval-stage", "stage1"]
 
 
 def _run_main(rd, monkeypatch, capsys, args):
@@ -267,11 +271,16 @@ def test_기본_성적표_경로는_산출물_폴더_안이다(rd):
         os.path.join(REPO, "docs")), "기본 성적표가 레포 문서를 가리킨다"
 
 
-def test_report_를_안_주면_out_아래에_쓰고_커밋된_성적표를_안_건드린다(
+def test_단계를_안_준_기본_실행도_커밋된_성적표를_안_건드린다(
         rd, harness, tmp_path, monkeypatch, capsys, committed_report_guard):
-    """★★★ 바로 이 결함 — 2026-09-30 실행이 여기서 `docs/reports/m3-dagger.md` 를 덮어썼다."""
+    """★★★ 바로 이 결함 — 2026-09-30 실행이 여기서 `docs/reports/m3-dagger.md` 를 덮어썼다.
+
+    **단계를 하나도 안 준다**(기본 단계 실행). 이 결함을 "기본 단계가 아닐 때만 막는다" 로
+    반만 고치면 그 반쪽 가드가 바로 이 실행에서 샌다 — 돌연변이 실험에서 실제로 살아남았고,
+    그래서 이 테스트는 `--stage` 를 주는 아래 테스트와 **둘 다** 있어야 한다.
+    """
     out = tmp_path / "run"
-    summary = _run_main(rd, monkeypatch, capsys, ["--out", str(out), *BASE])
+    summary = _run_main(rd, monkeypatch, capsys, ["--out", str(out), *MIN])
     assert summary["report"] == str(out / "report.md")
     assert (out / "report.md").exists()
     with open(COMMITTED_REPORT, "rb") as f:
