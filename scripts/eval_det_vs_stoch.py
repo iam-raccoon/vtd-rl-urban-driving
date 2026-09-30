@@ -22,6 +22,13 @@ ac-best.pt 대 runs/lab-main/2026-09-17-dagger-fix2/policy-r0.pt, 2026-09-26 실
 공유하고 `signals` 만 다르므로, 합쳐 넘기면 `VtdDriveEnv` 의 세계 캐시가 죽는다(`refit_m3.py`·
 `train_ppo.py` 와 같은 주의사항).
 
+M4i — 잴 단계를 `--stage` 로 고를 수 있다(반복 가능, `scripts/measure_teacher.py::stage_path`
+와 같은 규칙: 이름만 주면 `curricula/<이름>.json`, 경로나 `.json` 을 주면 그대로). **안 주면
+예전 그대로 stage1 + stage2** 라 기존 호출부와 과거 성적표(JSONL 키)가 그대로다.
+
+    ... scripts/eval_det_vs_stoch.py --checkpoint <ckpt> \
+        --stage stage1 --stage stage2 --stage stage3 --seeds 0 1 2 --device cpu
+
 확률적 평가는 `vtd_rl.policy.evaluate.evaluate_policy`/`run_policy_episode` 에 새로 생긴
 `deterministic=False`(+`generator`) 를 그대로 쓴다 — 예전(임시) 버전은 `run_policy_episode` 가
 `policy.act(obs, deterministic=True)` 를 박아 부르는 것을 뒤집는 얇은 프록시 클래스를 썼지만,
@@ -44,21 +51,49 @@ from vtd_rl.policy.net import DrivePolicy  # noqa: E402
 from vtd_rl.rl.actor_critic import ActorCritic  # noqa: E402
 from vtd_rl.world.board import load_curriculum  # noqa: E402
 
-CURRICULA = (os.path.join(REPO, "curricula", "stage1.json"),
-             os.path.join(REPO, "curricula", "stage2.json"))
+CURRICULA = os.path.join(REPO, "curricula")
+DEFAULT_STAGES = ("stage1", "stage2")     # `--stage` 를 안 주면 이것 — 예전 동작 그대로다
 
 
-def _stages():
-    """커리큘럼 파일마다 (이름표, 판 목록) — `refit_m3.py::_stages()` 와 같은 규칙.
+def stage_path(stage: str) -> str:
+    """단계 이름 → 커리큘럼 파일 경로(`measure_teacher.py::stage_path` 와 같은 규칙).
+
+    `"stage3"` 처럼 이름만 주면 `curricula/stage3.json`, 경로나 `.json` 을 주면 그대로 쓴다.
+    """
+    if stage.endswith(".json") or os.sep in stage:
+        return stage
+    return os.path.join(CURRICULA, f"{stage}.json")
+
+
+def _stages(stages=None):
+    """단계마다 (이름표, 판 목록) — `refit_m3.py::_stages()` 와 같은 규칙.
 
     단계마다 따로 평가해야 한다 — 판 이름이 단계끼리 같아서(`signals` 만 다르다) 합쳐 넘기면
     `VtdDriveEnv` 의 세계 캐시가 "다른 판을 준다" 로 죽는다. 독립 실행 스크립트라 `refit_m3.py`
     를 임포트하지 않고 작게 다시 쓴다(그 파일의 `_stages()` 주석과 같은 이유).
+
+    `stages` 가 없으면 `DEFAULT_STAGES`. 이름표는 파일 basename 이다 — 기존 JSONL 키
+    (`stage1`·`stage2`)를 그대로 유지해야 과거 성적표와 비교할 수 있다.
+
+    모르는 이름·빈 커리큘럼·이름표 충돌은 전부 **터뜨린다**. 셋 다 조용히 지나가면 "아무것도
+    안 잰" 결과가 진짜 측정처럼 보인다(`measure_teacher.py::load_stage` 와 같은 이유).
     """
-    out = []
-    for path in CURRICULA:
+    out, seen = [], {}
+    for stage in (stages if stages else DEFAULT_STAGES):
+        path = stage_path(stage)
+        if not os.path.exists(path):
+            have = sorted(os.path.splitext(f)[0] for f in os.listdir(CURRICULA)
+                          if f.endswith(".json"))
+            raise ValueError(f"그런 커리큘럼 단계가 없다: {stage!r} → {path} "
+                             f"(있는 단계: {', '.join(have)})")
         label = os.path.splitext(os.path.basename(path))[0]
+        if label in seen:
+            raise ValueError(f"단계 이름표가 겹친다: {label!r} "
+                             f"({seen[label]} 와 {path}) — JSONL 한 줄의 키라 덮어써진다")
+        seen[label] = path
         _name, boards = load_curriculum(path)
+        if not boards:
+            raise ValueError(f"단계 '{stage}' 에 판이 하나도 없다")
         out.append((label, boards))
     return out
 
@@ -74,10 +109,15 @@ def load_policy(path: str, device):
     return net
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", action="append", required=True,
                     help="DrivePolicy 또는 ActorCritic 체크포인트 경로(반복 가능)")
+    # 기본값을 `None` 으로 두는 것이 중요하다 — `action="append"` 에 리스트 기본값을 주면
+    # `--stage stage3` 가 그 리스트를 **지우지 않고 덧붙인다**(stage1, stage2, stage3).
+    ap.add_argument("--stage", action="append", default=None,
+                    help="커리큘럼 이름(stage3) 또는 파일 경로. 여러 번 줄 수 있다"
+                         f" (안 주면 {' + '.join(DEFAULT_STAGES)})")
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2],
                     help="단계마다 도는 판 시드 목록(결정적·확률적 평가 둘 다 같은 시드로 잰다)")
     ap.add_argument("--device", default="auto")
@@ -85,11 +125,11 @@ def main():
                     help="확률적 평가의 표본 추출 시드 — 고정해야 재현 가능하다(체크포인트마다"
                          " 같은 값을 새로 씨앗해 공정하게 비교한다)")
     ap.add_argument("--out", default=None, help="주면 체크포인트마다 한 줄씩 JSONL 로도 저장한다")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
 
     dev = pick_device(a.device)
     seeds = tuple(a.seeds)
-    stages = _stages()
+    stages = _stages(a.stage)
 
     rows = []
     for path in a.checkpoint:

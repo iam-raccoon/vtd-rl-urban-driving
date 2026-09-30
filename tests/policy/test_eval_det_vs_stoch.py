@@ -5,7 +5,17 @@
 ① 재현 가능한지(같은 시드 두 번이 같은 결과) ② 결정적 경로와 실제로 다른 행동을 내는지를
 `act()`/`run_policy_episode()` 수준에서 빠르게 확인한다 — `test_evaluate.py` 와 같은 짧은 판
 (H_0_250, 250m)을 써서 전체 커리큘럼 없이도 빠르다.
+
+M4i 에서 `--stage`(반복 가능)를 더했다 — 아래 "단계를 고르는 길" 절이 그 배선을 잠근다.
+잠그는 것 셋: **기본값이 예전 그대로 stage1+stage2** 인가(과거 성적표와의 비교가 여기 걸려
+있다), `--stage stage3` 가 **진짜 그 커리큘럼**으로 풀리는가, 모르는 단계 이름이 **조용히
+아무것도 안 재는 대신 터지는가**. 셋 다 틀려도 스크립트는 오류 없이 그럴듯한 JSON 한 줄을
+내므로 사람이 읽어서는 못 잡는다(`tests/test_measure_teacher.py` 와 같은 이유).
 """
+import importlib.util
+import json
+import os
+
 import numpy as np
 import pytest
 import torch
@@ -17,6 +27,8 @@ from vtd_rl.policy.net import DrivePolicy, PolicyConfig
 from vtd_rl.world.board import load_board, slice_board
 
 H = {"name": "course_H", "route": "routes/HL_FMA_NEW_H.json", "lane": "routes/HL_FMA_NEW_H_lane.json"}
+
+REPO = os.path.join(os.path.dirname(__file__), "..", "..")
 
 
 def short_board():
@@ -140,6 +152,135 @@ def test_evaluate_policy도_확률적_재현성을_지킨다():
     assert r1["goal_rate"] == pytest.approx(r2["goal_rate"])
     assert r1["mean_score_raw"] == pytest.approx(r2["mean_score_raw"])
     assert r1["mean_reward"] == pytest.approx(r2["mean_reward"])
+
+
+# ------------------------------------------------------------------ 단계를 고르는 길(M4i)
+def _script():
+    """스크립트를 모듈로 불러온다(`tests/test_measure_teacher.py::_load` 와 같은 패턴)."""
+    path = os.path.join(REPO, "scripts", "eval_det_vs_stoch.py")
+    spec = importlib.util.spec_from_file_location("eval_det_vs_stoch_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class _Ep:
+    """`policy.evaluate.EpisodeOutcome` 중 이 스크립트가 읽는 칸만."""
+
+    def __init__(self, outcome="goal"):
+        self.outcome = outcome
+
+
+class _Net:
+    """`load_policy` 가 주는 것 중 이 스크립트가 읽는 칸만."""
+
+    log_std = torch.zeros(2)
+
+    def eval(self):
+        return self
+
+
+def _stub_run(monkeypatch, m):
+    """`main()` 에서 실제 주행만 들어낸다 — 남는 것이 '어느 단계를 어떻게 넘기는가' 배선이다.
+
+    돌려주는 리스트에는 `evaluate_policy` 호출마다 (판 개수, 판 이름들) 이 쌓인다.
+    """
+    seen = []
+
+    def fake_evaluate(policy, boards, seeds=(0, 1, 2), config=None,
+                      deterministic=True, generator=None):
+        seen.append((len(boards), tuple(b.name for b in boards)))
+        return {"goal_rate": 1.0, "mean_score_raw": 90.0, "mean_score_completed": 90.0,
+                "episodes": [_Ep()]}
+
+    monkeypatch.setattr(m, "evaluate_policy", fake_evaluate)
+    monkeypatch.setattr(m, "load_policy", lambda path, dev: _Net())
+    return seen
+
+
+def _row(capsys):
+    return json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+
+
+def test_기본은_예전_그대로_stage1과_stage2다(monkeypatch, capsys):
+    """★ `--stage` 를 더하면서 **기본 동작이 바뀌지 않았음**을 잠근다.
+
+    M1 부터의 모든 성적표(JSONL 키 `stage1`·`stage2`)가 이 기본값으로 나왔다. 기본이
+    한 단계로 줄거나 stage3 가 끼어들면 과거 숫자와의 비교가 통째로 무너진다.
+    """
+    m = _script()
+    _stub_run(monkeypatch, m)
+    assert m.main(["--checkpoint", "없는.pt"]) == 0
+    row = _row(capsys)
+    assert [k for k in row if k not in ("checkpoint", "log_std")] == ["stage1", "stage2"]
+
+
+def test_stage3를_주면_진짜_그_단계를_잰다(monkeypatch, capsys):
+    """★ `--stage` 가 조용히 무시되면(언제나 stage1) 여기서 걸린다.
+
+    판 **이름**은 세 단계가 똑같으므로 이름으로는 못 가른다 — JSONL 키(이름표)로 가른다.
+    """
+    m = _script()
+    _stub_run(monkeypatch, m)
+    assert m.main(["--checkpoint", "없는.pt", "--stage", "stage3"]) == 0
+    row = _row(capsys)
+    assert [k for k in row if k not in ("checkpoint", "log_std")] == ["stage3"]
+
+
+def test_단계를_여러_번_줄_수_있고_준_순서대로_나온다(monkeypatch, capsys):
+    """`action="append"` 의 기본값 함정도 같이 잠근다 — 기본 리스트에 덧붙으면 4 개가 된다."""
+    m = _script()
+    _stub_run(monkeypatch, m)
+    assert m.main(["--checkpoint", "없는.pt", "--stage", "stage3", "--stage", "stage1"]) == 0
+    row = _row(capsys)
+    assert [k for k in row if k not in ("checkpoint", "log_std")] == ["stage3", "stage1"]
+
+
+def test_단계_이름은_그_단계의_커리큘럼으로_풀린다():
+    """이름표만으로는 부족하다 — 실제로 그 파일의 판이 왔는지 액터·신호로 확인한다.
+
+    (`tests/test_measure_teacher.py::test_단계를_이름으로_부르면_그_단계의_판이_온다` 와 같은
+    방법. 세 단계는 판 이름이 같고 신호·액터만 다르다.)
+    """
+    m = _script()
+    assert [label for label, _ in m._stages()] == ["stage1", "stage2"]
+    assert all(sum(len(b.scenario.actors) for b in boards) == 0 for _, boards in m._stages())
+    (label, boards), = m._stages(["stage3"])
+    assert label == "stage3"
+    assert sum(len(b.scenario.actors) for b in boards) >= 18
+    assert {b.signals for b in boards} == {"cycle"}
+    # 경로를 직접 줘도 된다(임시 커리큘럼으로 배치를 시험할 때 필요하다)
+    direct = os.path.join(REPO, "curricula", "stage3.json")
+    assert [label for label, _ in m._stages([direct])] == ["stage3"]
+
+
+def test_모르는_단계_이름은_터진다(monkeypatch):
+    """★ 조용히 아무것도 안 재는 것이 최악이다 — 빈 성적표는 "완주 0/0" 이라 읽을 수가 없다.
+
+    `_stages()` 수준과 `main()` 수준을 **둘 다** 본다. `main()` 이 예외를 삼키면
+    체크포인트만 적힌 한 줄이 나오고, 그게 진짜 측정처럼 보인다.
+    """
+    m = _script()
+    with pytest.raises(ValueError, match="stage없음"):
+        m._stages(["stage없음"])
+    seen = _stub_run(monkeypatch, m)
+    with pytest.raises(ValueError, match="stage없음"):
+        m.main(["--checkpoint", "없는.pt", "--stage", "stage없음"])
+    assert seen == []       # 터지기 전에 아무것도 재면 안 된다
+
+
+def test_단계는_따로_평가한다_판을_합치지_않는다(monkeypatch):
+    """★ 세계 캐시 보호 — 판 이름이 단계끼리 같아서 합쳐 넘기면 `VtdDriveEnv` 가 죽는다.
+
+    (`drive_env.py:89-96` 의 `assert`). 한 번에 12 판을 넘기는 순간 그 단언이 터지거나,
+    더 나쁘게는 다른 단계의 세계로 잰 숫자가 나온다. 단계마다 6 판씩 따로 불러야 한다.
+    """
+    m = _script()
+    seen = _stub_run(monkeypatch, m)
+    assert m.main(["--checkpoint", "없는.pt", "--stage", "stage1", "--stage", "stage3"]) == 0
+    assert len(seen) == 4                       # (단계 2) × (결정적·확률적)
+    assert [n for n, _ in seen] == [6, 6, 6, 6], seen
+    assert len({names for _, names in seen}) == 1   # 단계끼리 판 이름은 같다(그래서 위험하다)
 
 
 @pytest.mark.slow
