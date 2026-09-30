@@ -80,6 +80,7 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 - [docs/reports/m4g-probe.md](docs/reports/m4g-probe.md) — **★ PPO 는 학습 어느 시점에서도 출발점을 못 넘는다**
 - [docs/reports/m4h-stage3-teacher.md](docs/reports/m4h-stage3-teacher.md) — **★ 단계 ③ 에서 선생님이 지는 지점**(+ [해석](docs/reports/m4h-stage3-notes.md))
 - [docs/reports/m4i-student-stage3.md](docs/reports/m4i-student-stage3.md) — M3 학생은 단계 ③ 에서 **0/18**(전부 충돌)
+- [docs/reports/m4j-obs-diag.md](docs/reports/m4j-obs-diag.md) — 학생은 물체를 **보고도 무시한다**(관측은 멀쩡하다)
 
 ### 여기까지 온 곳
 **PPO 는 M3 모방 학생을 한 번도 못 넘었다 — 학습의 어느 시점에서도.** 목표 판정은 M4a 부터 지금까지
