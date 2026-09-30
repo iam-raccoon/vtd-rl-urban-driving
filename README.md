@@ -17,17 +17,19 @@ Hexagon VTD 2025.2 의 도심 지도(LivingLab)에서 도로교통법을 지키�
     .venv/bin/pip install -e . -r requirements-dev.txt
 
 ## 테스트
-테스트는 539 개다. 한 번에 다 돌 수도 있지만(`env -u PYTHONPATH .venv/bin/pytest`, 약 18 분), 학습
+테스트는 608 개다. 한 번에 다 돌 수도 있지만(`env -u PYTHONPATH .venv/bin/pytest`, 약 20 분), 학습
 테스트가 길어져서 **세 조각**으로 나눠 돌리는 것을 권한다 — 한 번에 돌리면 도구·CI 의 실행 시간
 상한에 걸린다.
 
-    env -u PYTHONPATH .venv/bin/python -m pytest -q -m "not slow"                 # 492개, 약 1분 30초
-    env -u PYTHONPATH .venv/bin/python -m pytest tests/rl/ -q                     # 145개, 약 12분
-    env -u PYTHONPATH .venv/bin/python -m pytest -q -m slow --ignore=tests/rl     # 27개, 약 5분
+    env -u PYTHONPATH .venv/bin/python -m pytest -q -m "not slow"                 # 557개, 약 1분 40초
+    env -u PYTHONPATH .venv/bin/python -m pytest tests/rl/ -q                     # 148개, 약 12분
+    env -u PYTHONPATH .venv/bin/python -m pytest -q -m slow --ignore=tests/rl     # 30개, 약 7분
 
-세 조각이 539 개를 **덮지만 나누지는 않는다**: 첫 조각의 `-m "not slow"` 가 `tests/rl` 의 빠른 테스트
-125 개까지 가져가서 둘째 조각과 겹친다(그 125 개는 두 번 돈다 — 빨라서 그냥 둔다). 합이 664 인 것은
+세 조각이 608 개를 **덮지만 나누지는 않는다**: 첫 조각의 `-m "not slow"` 가 `tests/rl` 의 빠른 테스트
+127 개까지 가져가서 둘째 조각과 겹친다(그 127 개는 두 번 돈다 — 빨라서 그냥 둔다). 합이 735 인 것은
 그래서다.
+
+**⚠ 셋째 조각이 432 초로 도구 상한(600 초)에 가까워졌다.** 느린 테스트를 더 넣기 전에 쪼개야 한다.
 
 **판정은 종료 코드(`$?` = 0)로 한다** — `"N passed"` 를 grep 하면 같은 줄의 `"1 failed"` 를 삼킨다.
 파이프(`| tail`)를 태우면 `$?` 가 pytest 가 아니라 `tail` 의 것이 되니, 출력을 파일로 받고 종료 코드를
@@ -115,6 +117,12 @@ M4e 가 시드 3 개에서 본 +22.2pp 가 **시드 6 개로 늘리자 사라졌
 지시등을 안 켜는 것**이다(항목 ⑬, 42 슬롯, ③ 에서 새로 열림). 지시등은 **이미 정책의 행동 출력**이라,
 규칙 스택이 확실히 틀리고 정책이 고칠 수 있는 결정이 처음으로 나왔다. **모방학습은 이 실수를 그대로
 배우므로, 여기서 PPO 가 학생을 넘는지가 진짜 시험이다.**
+
+**다만 학생은 아직 단계 ③ 을 달리지도 못한다** — 18/18 전부 첫 액터에서 충돌한다(`m4i`). 이유는
+관측 버그가 아니다: 물체는 80 m 에서 정확히 들어와 충돌 직전까지 55~125 걸음 살아 있는데, 그 동안
+**정책의 조향·가속이 소수 둘째 자리까지 안 움직인다**(`m4j`). M3 DAgger 데이터가 전부 물체 0 개인
+단계 ①② 에서 나와 **물체 슬롯 16 개가 학습 내내 마스크였기 때문**이다. 그래서 다음은 단계 ③ 에서의
+**DAgger 재수집**이고, 첫 목표는 지시등이 아니라 **"안 박고 끝내기"** 다.
 
     env -u PYTHONPATH .venv/bin/python scripts/train_ppo.py --out runs/$(hostname)/$(date +%F)-ppo \
       --init <M3 체크포인트> --dagger-data <M3 데이터 폴더>
