@@ -78,6 +78,7 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 - [docs/reports/m4e-ppo.md](docs/reports/m4e-ppo.md) — 그 개입 둘의 결과(모방 앵커 바닥 대 σ 어닐링)
 - [docs/reports/m4f-ppo.md](docs/reports/m4f-ppo.md) — 개입 둘을 제대로 재고 **둘 다 기각**
 - [docs/reports/m4g-probe.md](docs/reports/m4g-probe.md) — **★ PPO 는 학습 어느 시점에서도 출발점을 못 넘는다**
+- [docs/reports/m4h-stage3-teacher.md](docs/reports/m4h-stage3-teacher.md) — **★ 단계 ③ 에서 선생님이 지는 지점**(+ [해석](docs/reports/m4h-stage3-notes.md))
 
 ### 여기까지 온 곳
 **PPO 는 M3 모방 학생을 한 번도 못 넘었다 — 학습의 어느 시점에서도.** 목표 판정은 M4a 부터 지금까지
@@ -104,7 +105,14 @@ M4e 가 시드 3 개에서 본 +22.2pp 가 **시드 6 개로 늘리자 사라졌
 정책을 정체에서 꺼내 주던 버팀목**이었고, 줄이면 나쁜 평균이 고쳐지는 게 아니라 드러난다.
 
 그리고 M4e·M4f 실행 **21 개 전부** 최선 체크포인트가 0.5M~1M 이다 — 3M 을 돌리는데 **나머지 2M 은 정책을
-나쁘게만 만든다.** 다음은 증상(정체)이 아니라 이것을 봐야 한다.
+나쁘게만 만든다.**
+
+**★ 다만 그 결론은 단계 ①② 한정이다.** 스펙의 M4 기준은 "단계 ⑤ 진급" 인데(`design.md:233`) 그동안
+존재한 판은 ①② 뿐이었고, 거기서는 **선생님이 99.6 / 99.5 라 이길 여지가 거의 없었다.** M4h 에서 단계 ③
+(사물·정지차) 판을 만들어 재 보니 **선생님이 96.8 로 −2.8 점을 잃고, 그 대부분이 장애물을 피하면서
+지시등을 안 켜는 것**이다(항목 ⑬, 42 슬롯, ③ 에서 새로 열림). 지시등은 **이미 정책의 행동 출력**이라,
+규칙 스택이 확실히 틀리고 정책이 고칠 수 있는 결정이 처음으로 나왔다. **모방학습은 이 실수를 그대로
+배우므로, 여기서 PPO 가 학생을 넘는지가 진짜 시험이다.**
 
     env -u PYTHONPATH .venv/bin/python scripts/train_ppo.py --out runs/$(hostname)/$(date +%F)-ppo \
       --init <M3 체크포인트> --dagger-data <M3 데이터 폴더>
