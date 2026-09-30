@@ -41,6 +41,26 @@ def test_stage키는_허용하되_안_읽는다(tmp_path):
     assert len(boards) == 1
 
 
+def test_jitter_오타는_변종을_안_써도_터진다(tmp_path):
+    """★ 변종을 켤 때까지 숨어 있으면 안 된다 — 그때는 "왜 배치가 안 흔들리지" 가 된다."""
+    bad = {**BASE, "boards": [{**BASE["boards"][0], "jitter": {"s": 40.0, "lat": 0.6}}]}
+    with pytest.raises(ValueError, match="lat"):
+        load_curriculum(_write(tmp_path, bad))
+
+
+def test_variants가_1보다_작으면_터진다():
+    with pytest.raises(ValueError, match="variants"):
+        load_curriculum("curricula/stage3.json", variants=0)
+
+
+def test_기존_커리큘럼은_jitter가_없어도_읽힌다():
+    """stage1·stage2 에는 `jitter` 키가 없다 — 그대로 읽혀야 한다."""
+    for name in ("stage1", "stage2"):
+        _, boards = load_curriculum(f"curricula/{name}.json", variants=2)
+        assert len(boards) == 12
+        assert all("@v" in b.name for b in boards)
+
+
 def test_판에_액터를_실으면_scenario에_들어간다(tmp_path):
     d = {**BASE, "boards": [{**BASE["boards"][0],
          "actors": [{"id": 1, "kind": "static", "type": "obstacle",

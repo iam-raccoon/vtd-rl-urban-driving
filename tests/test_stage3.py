@@ -1,8 +1,10 @@
 import bisect
 import json
+import math
 from collections import defaultdict
 
 from vtd_rl.world.board import load_curriculum
+from vtd_rl.world.place import route_point
 
 
 def test_단계3이_여섯_코스를_모두_덮는다():
@@ -130,3 +132,156 @@ def test_정지차_뒤에는_충분한_복귀_거리를_둔다():
             assert gap >= need, (
                 f"{name}: 액터{prev['id']}(s={prev['s']}) 뒤 {gap:.0f} m 에 "
                 f"액터{nxt['id']} — {need:.0f} m 는 떨어져야 한다")
+
+
+# ---------------------------------------------------------------- 판 변종(variants)
+# M4j 판정: 학생이 단계 ③ 에서 첫 액터에 박는데 **시드를 바꿔도 같은 걸음에서 죽는다** —
+# 액터가 고정이라 시드가 신호 위상만 바꾼다. 그래서 시드가 아니라 **판을 여러 벌** 만든다.
+# 아래가 그 변종 장치를 잠근다.
+
+
+def _pos(board):
+    return tuple(tuple(a.motion["pos"]) for a in board.scenario.actors)
+
+
+def _s_of(board, actor):
+    """액터의 세계 좌표를 경로에 되투영한 호 길이[m].
+
+    `rs.Actor` 의 필드는 `{id, type, size, spawn, motion, events}` 뿐이라 흔든 뒤의 `s` 를
+    실을 자리가 없다(2026-09-30 확인) — 그래서 되투영으로 되찾는다.
+    """
+    x, y = actor.motion["pos"]
+    return board.route.project(x, y).s
+
+
+def test_변종은_이름이_다르고_배치가_다르다():
+    _, base = load_curriculum("curricula/stage3.json")
+    _, vs = load_curriculum("curricula/stage3.json", variants=3)
+    assert len(vs) == 3 * len(base)
+    names = [b.name for b in vs]
+    assert len(set(names)) == len(names), "이름이 겹치면 월드 캐시가 죽는다"
+    assert all("@v" in n for n in names)
+    h = [b for b in vs if b.name.startswith("course_H@")]
+    pos = [_pos(b) for b in h]
+    assert len(set(pos)) == len(pos), "변종인데 배치가 같다 — jitter 가 안 먹었다"
+
+
+def test_변종_이름은_모든_코스에서_서로_안_겹친다():
+    """★ `VtdDriveEnv._worlds` 는 판을 **이름으로** 캐시한다(`env/drive_env.py:89-96`).
+
+    이름이 겹치면 관측·심판은 이 판을, 세계는 저 판을 보고 `:96` assert 가 죽는다.
+    """
+    _, vs = load_curriculum("curricula/stage3.json", variants=5)
+    assert len({b.name for b in vs}) == len(vs) == 5 * 6
+
+
+def test_같은_변종은_항상_같은_배치다():
+    """DAgger 라운드마다 판이 달라지면 무엇을 배웠는지 못 가린다."""
+    _, a = load_curriculum("curricula/stage3.json", variants=3)
+    _, b = load_curriculum("curricula/stage3.json", variants=3)
+    for x, y in zip(a, b):
+        assert x.name == y.name
+        assert _pos(x) == _pos(y)
+
+
+def test_변종_번호를_늘려도_앞의_변종은_그대로다():
+    """`--variants 4` 로 모은 데이터와 `--variants 8` 이 겹치는 부분은 같은 판이어야 한다 —
+
+    변종 수를 늘려 이어 모을 때 앞 라운드 데이터가 다른 판의 것이 되면 안 된다.
+    """
+    _, a = load_curriculum("curricula/stage3.json", variants=2)
+    _, b = load_curriculum("curricula/stage3.json", variants=4)
+    by = {x.name: _pos(x) for x in b}
+    for x in a:
+        assert _pos(x) == by[x.name], x.name
+
+
+def test_variants_1은_예전과_완전히_같다():
+    """기존 호출부(stage1·stage2·기존 성적표)가 안 바뀐다."""
+    _, old = load_curriculum("curricula/stage3.json")
+    _, new = load_curriculum("curricula/stage3.json", variants=1)
+    assert [b.name for b in old] == [b.name for b in new]
+    for x, y in zip(old, new):
+        assert _pos(x) == _pos(y)
+
+
+def test_변종0은_손대지_않은_원본_배치다():
+    """손으로 맞춰 검증한 배치가 변종 묶음에 항상 한 벌은 남아 있어야 한다."""
+    _, base = load_curriculum("curricula/stage3.json")
+    _, vs = load_curriculum("curricula/stage3.json", variants=4)
+    by = {b.name: b for b in vs}
+    for b in base:
+        assert _pos(by[f"{b.name}@v0"]) == _pos(b), b.name
+
+
+def test_흔들어도_액터_수와_종류는_그대로다():
+    _, vs = load_curriculum("curricula/stage3.json", variants=4)
+    for b in vs:
+        assert len(b.scenario.actors) >= 3
+        for a in b.scenario.actors:
+            assert a.motion["kind"] == "static"
+            assert "hd" in a.motion, "흔든 뒤에도 경로 방위를 다시 넣어야 한다"
+
+
+def test_흔든_뒤_hd는_옮겨_간_자리의_경로_방위다():
+    """★★ `"hd" in motion` 만 보면 **옛 자리의 방위가 그대로 남은** 버그를 못 잡는다.
+
+    이미 만든 액터의 `pos` 만 밀고 `hd` 를 다시 계산하지 않으면 키는 그대로 있다. 그런데
+    `mock_vtd.py:46-50` 이 경고하는 대로 `hd` 가 틀리면 굽은 코스에서 긴 차의 상자가 도로를
+    가로질러 눕고 없는 충돌(-50)이 난다. 그래서 **되투영한 자리의 경로 방위와 맞는지** 본다.
+    (실측 2026-09-30: 제대로 계산하면 오차가 정확히 0 이다.)
+    """
+    _, vs = load_curriculum("curricula/stage3.json", variants=4)
+    worst = 0.0
+    for b in vs:
+        for a in b.scenario.actors:
+            want = route_point(b, _s_of(b, a), 0.0)[2]
+            err = abs(math.atan2(math.sin(a.motion["hd"] - want),
+                                 math.cos(a.motion["hd"] - want)))
+            worst = max(worst, err)
+            assert err < 0.05, (b.name, a.id, a.motion["hd"], want)
+    assert worst < 1e-6, f"계산이 맞으면 오차는 0 이어야 한다(최대 {worst})"
+
+
+def test_흔들기는_경로_밖으로_안_나간다():
+    """`s` 가 음수거나 경로 길이를 넘으면 `route_point` 가 끝점으로 포화해 액터가 뭉친다.
+
+    경로 길이는 `board.route.total` 이다(`length` 가 아니다 — 확인함).
+    """
+    _, vs = load_curriculum("curricula/stage3.json", variants=6)
+    for b in vs:
+        for a in b.scenario.actors:
+            s = _s_of(b, a)
+            assert 5.0 < s < b.route.total - 5.0, (b.name, a.id, s)
+
+
+def test_변종도_달릴_수_있는_배치다():
+    """★★ 위의 빠른 잠금 셋(경로 앞뒤 100 m·비킬 차로·정지차 뒤 복귀 거리)을 **변종에도**
+
+    그대로 먹인다. 원본 배치만 검사하면 흔들기 폭을 키운 사람이 코스 여섯 판을 다 몰아 본
+    뒤에야 깨진 것을 안다. 흔들기 설계(호 길이는 판마다 **공통 오프셋** 하나)가 액터 사이
+    간격을 보존하는 것도 여기서 같이 잠긴다 — 액터마다 따로 흔들면 코스 A 의 라바콘 줄
+    (15 m 간격)과 코스 G 의 정지차→라바콘 70 m 가 곧바로 깨진다.
+    """
+    _, vs = load_curriculum("curricula/stage3.json", variants=6)
+    for b in vs:
+        acts = sorted(b.scenario.actors, key=lambda a: _s_of(b, a))
+        for a in acts:
+            s = _s_of(b, a)
+            assert 100.0 <= s <= b.route.total - 100.0, (b.name, a.id, s)
+            i = max(0, bisect.bisect_right(b.route.cum, s) - 1)
+            plan = b.lane_plan[min(i, len(b.lane_plan) - 1)]
+            big = max(a.size[0], a.size[1])
+            if big < NUDGE_MAX_DIM:
+                need = EGO_HALF_W + big / 2.0 + NUDGE_CLEAR + EGO_HALF_W
+            else:
+                need = plan["w"] + EGO_HALF_W
+            assert max(plan["l"], plan["r"]) >= need, (
+                f"{b.name} 액터{a.id} s={s:.0f}: l={plan['l']:.2f} r={plan['r']:.2f} — "
+                f"{need:.2f} m 가 필요하다")
+        for prev, nxt in zip(acts, acts[1:]):
+            gap = _s_of(b, nxt) - _s_of(b, prev)
+            need = AFTER_VEHICLE_M if prev.size[0] > 2.2 else MIN_GAP_M
+            assert gap >= need - 1e-6, (
+                f"{b.name}: 액터{prev.id} 뒤 {gap:.0f} m 에 액터{nxt.id} — "
+                f"{need:.0f} m 는 떨어져야 한다")
