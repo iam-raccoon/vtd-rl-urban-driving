@@ -17,19 +17,21 @@ Hexagon VTD 2025.2 의 도심 지도(LivingLab)에서 도로교통법을 지키�
     .venv/bin/pip install -e . -r requirements-dev.txt
 
 ## 테스트
-테스트는 608 개다. 한 번에 다 돌 수도 있지만(`env -u PYTHONPATH .venv/bin/pytest`, 약 20 분), 학습
+테스트는 663 개다. 한 번에 다 돌 수도 있지만(`env -u PYTHONPATH .venv/bin/pytest`, 약 20 분), 학습
 테스트가 길어져서 **세 조각**으로 나눠 돌리는 것을 권한다 — 한 번에 돌리면 도구·CI 의 실행 시간
 상한에 걸린다.
 
-    env -u PYTHONPATH .venv/bin/python -m pytest -q -m "not slow"                 # 557개, 약 1분 40초
+    env -u PYTHONPATH .venv/bin/python -m pytest -q -m "not slow"                 # 612개, 약 1분 45초
     env -u PYTHONPATH .venv/bin/python -m pytest tests/rl/ -q                     # 148개, 약 12분
     env -u PYTHONPATH .venv/bin/python -m pytest -q -m slow --ignore=tests/rl     # 30개, 약 7분
 
-세 조각이 608 개를 **덮지만 나누지는 않는다**: 첫 조각의 `-m "not slow"` 가 `tests/rl` 의 빠른 테스트
-127 개까지 가져가서 둘째 조각과 겹친다(그 127 개는 두 번 돈다 — 빨라서 그냥 둔다). 합이 735 인 것은
+세 조각이 663 개를 **덮지만 나누지는 않는다**: 첫 조각의 `-m "not slow"` 가 `tests/rl` 의 빠른 테스트
+127 개까지 가져가서 둘째 조각과 겹친다(그 127 개는 두 번 돈다 — 빨라서 그냥 둔다). 합이 790 인 것은
 그래서다.
 
-**⚠ 셋째 조각이 432 초로 도구 상한(600 초)에 가까워졌다.** 느린 테스트를 더 넣기 전에 쪼개야 한다.
+**⚠ 둘째 조각(`tests/rl`)이 718 초로 도구 상한(600 초)을 이미 넘었다** — 이 조각은 백그라운드로
+돌리고 종료 코드를 파일로 받아야 한다. 셋째 조각도 427 초로 상한에 가깝다. 느린 테스트를 **여기
+둘에는 더 넣지 말고** 첫 조각(빠른 조각)에 넣어라.
 
 **판정은 종료 코드(`$?` = 0)로 한다** — `"N passed"` 를 grep 하면 같은 줄의 `"1 failed"` 를 삼킨다.
 파이프(`| tail`)를 태우면 `$?` 가 pytest 가 아니라 `tail` 의 것이 되니, 출력을 파일로 받고 종료 코드를
@@ -63,6 +65,19 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 결과: [docs/reports/m3-dagger.md](docs/reports/m3-dagger.md)
 
     env -u PYTHONPATH .venv/bin/python scripts/run_dagger.py --out runs/$(hostname)/$(date +%F)-dagger
+
+성적표는 기본이 `<--out>/report.md` 다. `docs/reports/` 아래 **커밋된** 성적표는 실행마다 새로 나오는
+산출물이 아니라 그 마일스톤의 증거물이라, 다시 만들려면 경로를 `--report` 로 직접 적어야 한다
+(`--report docs/reports/m3-dagger.md`).
+
+이미 운전할 줄 아는 학생 위에 더 어려운 단계를 얹을 때는 `--init` 으로 그 체크포인트에서 출발한다.
+안 주면 라운드마다 새 그물이라 **운전을 처음부터 다시 배운다** — 2026-09-30 실측: 단계 ③ 5 라운드가
+단계 ① 완주율 16.7% 로 끝났다(그 출발점인 M3 학생은 같은 판에서 100%).
+
+    env -u PYTHONPATH .venv/bin/python scripts/run_dagger.py \
+        --out runs/$(hostname)/$(date +%F)-dagger-s3 --stage stage3 --variants 4 \
+        --eval-stage stage1 --eval-stage stage2 --eval-stage stage3 \
+        --init runs/omen/2026-09-26-m3-squash-warm/policy.pt
 
 데이터·체크포인트는 `runs/` 아래에만 두고 커밋하지 않는다.
 

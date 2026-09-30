@@ -4,21 +4,28 @@
         --out runs/lab-main/$(date +%F)-dagger --rounds 5 --seeds 2 --workers 12
     env -u PYTHONPATH .venv/bin/python scripts/run_dagger.py --smoke --out /tmp/smoke
 
-단계 ③(액터 있는 판)에서 모을 때 — 판 변종 4 개, 평가는 ①②③ 전부:
+단계 ③(액터 있는 판)에서 모을 때 — 판 변종 4 개, 평가는 ①②③ 전부, **출발점은 M3 학생**:
 
     env -u PYTHONPATH .venv/bin/python scripts/run_dagger.py \
         --out runs/omen/$(date +%F)-dagger-s3 --stage stage3 --variants 4 \
-        --eval-stage stage1 --eval-stage stage2 --eval-stage stage3 --workers 24
+        --eval-stage stage1 --eval-stage stage2 --eval-stage stage3 --workers 24 \
+        --init runs/omen/2026-09-26-m3-squash-warm/policy.pt
+
+`--init` 없이 단계 ③ 을 모으면 **운전을 처음부터 다시 배운다** — 2026-09-30 실측: 라운드 0
+(β=1.0, 선생님만 몬 데이터)의 학생이 단계 ① 완주율 16.7% 로 나왔다(M3 학생은 100%/98.60).
+5 라운드로는 M3 가 5 라운드에 걸쳐 배운 것을 더 어려운 판에서 다시 못 배운다.
 
 무엇을 모으고 무엇을 평가할지만 먼저 확인할 때(아무것도 안 돌린다):
 
     env -u PYTHONPATH .venv/bin/python scripts/run_dagger.py \
         --dry-run --stage stage3 --variants 4
 
-성적표만 다시 만들 때(라운드를 다시 안 돌림):
+성적표는 기본이 `<--out>/report.md` 다 — `docs/reports/` 아래 커밋된 성적표를 덮어쓰려면
+그 경로를 **직접** 적어야 한다. 커밋된 M3 성적표를 다시 만드는 명령은 이것이다:
 
     env -u PYTHONPATH .venv/bin/python scripts/run_dagger.py --report-only \
-        --out runs/lab-main/2026-09-17-dagger-fix2 --history ... --history-note "..."
+        --out runs/lab-main/2026-09-17-dagger-fix2 \
+        --report docs/reports/m3-dagger.md --history ... --history-note "..."
 """
 import argparse
 import datetime
@@ -40,7 +47,7 @@ from vtd_rl.policy.collect import collect_episode  # noqa: E402
 from vtd_rl.policy.dataset import load_dir, load_shard, save_shard  # noqa: E402
 from vtd_rl.policy.evaluate import evaluate_policy, evaluate_teacher, violation_counts  # noqa: E402
 from vtd_rl.policy.net import DrivePolicy, PolicyConfig  # noqa: E402
-from vtd_rl.policy.train import TrainConfig, train_epochs  # noqa: E402
+from vtd_rl.policy.train import TrainConfig, squash_aligned, train_epochs  # noqa: E402
 from vtd_rl.world.board import load_board, load_curriculum, slice_board  # noqa: E402
 
 BETAS = [1.0, 0.5, 0.25, 0.1, 0.0]
@@ -50,6 +57,11 @@ STOPPED_SPEED = 0.02   # vec[:,0] = ego 속도/25 클립값 — 0.02 는 약 0.5
 #: 아무것도 안 주면 예전 그대로 — 수집은 단계 ① 하나, 평가는 ①②.
 DEFAULT_COLLECT_STAGES = ["stage1"]
 DEFAULT_EVAL_STAGES = ["stage1", "stage2"]
+
+#: 성적표 기본 파일 이름. **산출물 폴더 안**에 쓴다 — 예전 기본값은 `docs/reports/m3-dagger.md`
+#: 였고, 그래서 `--report` 를 안 준 실행이 커밋된 M3 성적표를 조용히 덮어썼다(2026-09-30 실측:
+#: 단계 ③ DAgger 가 M3 성적표 자리에 실패한 결과를 써 버렸다).
+DEFAULT_REPORT_NAME = "report.md"
 
 #: 성적표에 쓸 사람 말 이름. 없는 단계는 이름을 그대로 쓴다 — 기본 실행의 성적표 문구가
 #: 예전과 한 글자도 안 달라지게 하려는 것이다(옛 성적표와 나란히 놓고 읽는다).
@@ -76,6 +88,17 @@ def stage_path(name: str) -> str:
         raise ValueError(f"모르는 단계 '{name}' — 커리큘럼이 없다({path}). "
                          f"있는 단계: {', '.join(avail)}")
     return path
+
+
+def resolve_report(report, out) -> str:
+    """성적표 경로 — 안 주면 `<out>/report.md` 다. **어떤 인자 조합에서도 레포 문서를 안 고른다.**
+
+    `--stage` 를 줬든 안 줬든, `--report-only` 든 `--smoke` 든 마찬가지다. 커밋된 성적표
+    (`docs/reports/m3-dagger.md`)는 실행마다 새로 나오는 산출물이 아니라 M3 의 증거물이라,
+    덮어쓰려면 그 경로를 `--report` 로 **직접** 적어야 한다(한 번 더 타이핑하는 대신, 실수로
+    덮어쓸 길이 없다). 예전 기본값이 바로 그 문서였고 실제로 한 번 덮어썼다.
+    """
+    return report if report else os.path.join(out, DEFAULT_REPORT_NAME)
 
 
 def resolve_stages(stage, eval_stage):
@@ -177,6 +200,31 @@ def eval_boards(names, smoke):
 def _new_net(smoke, dev):
     cfg = PolicyConfig(trunk=(64, 64)) if smoke else PolicyConfig()
     return DrivePolicy(cfg).to(dev)
+
+
+def round_start_net(init_path, smoke, dev):
+    """그 라운드의 학습이 **출발할** 그물.
+
+    `--init` 이 없으면 예전 그대로 새 그물이다(기본값은 안 바뀐다 — 커밋된 M3 성적표가 그
+    동작으로 나왔다). 있으면 그 `DrivePolicy` 체크포인트를 읽어 거기서 이어 간다. 체크포인트를
+    읽는 길은 수집이 이전 라운드 그물을 집어 오는 길(`_collect_job` 의 `DrivePolicy.load`)과
+    **같은 것 하나**다 — 웜스타트 수단을 따로 만들지 않는다.
+
+    ★ 왜 라운드 0 만이 아니라 **매 라운드** 이 체크포인트에서 출발하는가:
+    라운드마다 새로 짓는 규칙(아래 학습 루프 주석)이 막으려던 것은 *이전 라운드* 그물을
+    이어 써서 **에폭이 쌓이는 것**이다(라운드 7 이면 64 에폭 → log_std 붕괴). 매 라운드
+    **같은 고정 체크포인트**에서 출발하면 라운드마다 정확히 `--epochs` 에폭이고 에폭이 안
+    쌓인다 — 그 규칙을 그대로 지키면서 M3 학생을 안 버린다. 라운드 0 만 웜스타트하면
+    라운드 1 에서 도로 버려져 결함이 반쯤만 고쳐진다.
+
+    `--smoke` 의 작은 몸통(64,64)은 `--init` 이 있으면 안 쓴다 — 모양은 체크포인트가 정한다.
+    """
+    if not init_path:
+        return _new_net(smoke, dev)
+    net = DrivePolicy.load(init_path, device=dev)
+    # 옛 체크포인트의 log_std 가 지금 설정의 범위 밖일 수 있다(`refit_m3.py` 도 같은 일을 한다).
+    net.clamp_log_std()
+    return net
 
 
 def _stall_start_count(data_dir, rnd, names, num_seeds) -> int:
@@ -327,7 +375,17 @@ def _dry_run_lines(collect_names, eval_names, smoke, variants, seeds, rounds):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", help="산출물 폴더(--dry-run 이 아니면 필수)")
-    ap.add_argument("--report", default=os.path.join(REPO, "docs", "reports", "m3-dagger.md"))
+    ap.add_argument("--report", default=None,
+                    help=f"성적표 경로(기본 `<--out>/{DEFAULT_REPORT_NAME}`). `docs/reports/` 아래"
+                         " 커밋된 성적표를 다시 만들려면 그 경로를 **직접** 적어라 — 기본값이"
+                         " 그 문서였을 때 실행 한 번이 M3 성적표를 조용히 덮어썼다")
+    ap.add_argument("--init", default=None,
+                    help="라운드 학습이 출발할 `DrivePolicy` 체크포인트(웜스타트). 없으면 예전"
+                         " 그대로 새 그물에서 시작한다. 이미 운전할 줄 아는 학생(M3:"
+                         " runs/omen/2026-09-26-m3-squash-warm/policy.pt) 위에 더 어려운 단계를"
+                         " 얹을 때 쓴다 — 없으면 DAgger 가 그 학생을 버리고 처음부터 다시 배운다."
+                         " 수집(β 혼합)에 쓰는 이전 라운드 체크포인트와는 별개다: 라운드 0 은"
+                         " β=1.0 이라 어차피 선생님만 몬다")
     ap.add_argument("--stage", action="append", default=[],
                     help=f"**수집** 커리큘럼 이름(반복 가능, 기본 {' '.join(DEFAULT_COLLECT_STAGES)})")
     ap.add_argument("--eval-stage", action="append", default=[],
@@ -382,6 +440,11 @@ def main():
         return 0
     if not a.out:
         ap.error("--out 이 필요하다")
+    if a.init and not os.path.exists(a.init):
+        # 오타 하나로 웜스타트가 조용히 빠지고 "처음부터 다시 배우는" 실행이 되면 안 된다 —
+        # 5 라운드 몇 시간을 다 쓴 뒤에야 성적표에서 드러난다.
+        ap.error(f"--init 체크포인트가 없다: {a.init}")
+    a.report = resolve_report(a.report, a.out)
 
     data_dir = os.path.join(a.out, "data")
     log_path = os.path.join(a.out, "log.jsonl")
@@ -427,8 +490,12 @@ def main():
             # 8 에폭 완주율 100%, 같은 데이터). 판을 몰 때 쓰는 이전 라운드 체크포인트(policy_path, β 혼합)는
             # 그대로 두고, 학습만 매 라운드 새 그물로 한다.
             torch.manual_seed(a.seed + rnd)   # 안 걸면 초기값이 전역 RNG 상태에 따라 실행마다 달라진다
-            net_r = _new_net(a.smoke, dev)
-            train = train_epochs(net_r, dataset, TrainConfig(epochs=a.epochs, seed=rnd), device=dev)
+            net_r = round_start_net(a.init, a.smoke, dev)
+            # 손실의 `squash` 를 그물에 맞춘다 — `--init` 이 스쿼시 체크포인트(M4c 재적합 학생)면
+            # 라벨을 atanh 로 옮겨 배워야 한다. 안 맞추면 tanh 정책을 clamp 가능도로 학습해
+            # **웜스타트가 조용히 망가진다**. `--init` 없는 기본 경로는 둘 다 False 라 무동작이다.
+            tcfg = squash_aligned(TrainConfig(epochs=a.epochs, seed=rnd), net_r)
+            train = train_epochs(net_r, dataset, tcfg, device=dev)
             net_r.save(os.path.join(a.out, f"policy-r{rnd}.pt"))
 
             row = {"round": rnd, "beta": beta, "episodes": len(metas),
@@ -501,6 +568,12 @@ def main():
             f" {_distinct_episodes(t)}/{len(t['episodes'])}개"
             for s, e, t in zip(eval_names, evs, teachers))
         + " (액터·신호가 고정이면 시드가 달라도 같은 판이 되기 쉽다).")
+    # `--init` 이 없으면 줄 자체를 안 넣는다 — 기본 실행의 성적표 문구가 예전과 한 글자도
+    # 안 달라져야 커밋된 M3 성적표를 그대로 다시 만들 수 있다.
+    if a.init:
+        lines.append(f"- 출발점: `{a.init}` 에서 웜스타트 — 라운드마다 **이 체크포인트**에서 다시"
+                     " 시작한다(이전 라운드 그물을 이어 쓰지 않아 에폭이 안 쌓인다). 이 성적표의"
+                     " 완주율은 '처음부터 배운 결과' 가 아니라 '그 학생을 이 단계에 더 얹은 결과' 다.")
     lines += [
         zero_shot_line, "",
         "| 라운드 | β | 수집 판(완주) | 누적 표본 | 손실 | 정지-출발 표본¹ | "
@@ -563,7 +636,7 @@ def main():
 
     summary = {"rounds": len(rounds), "samples": last["samples"],
                "collect_stages": collect_names, "eval_stages": eval_names,
-               "variants": a.variants,
+               "variants": a.variants, "init": a.init,
                "teacher1": {k: teacher1[k] for k in ("goal_rate", "mean_score")},
                "target_met": ok, "report": a.report}
     for stage in eval_names:
