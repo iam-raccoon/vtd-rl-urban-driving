@@ -71,8 +71,13 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 (`--report docs/reports/m3-dagger.md`).
 
 이미 운전할 줄 아는 학생 위에 더 어려운 단계를 얹을 때는 `--init` 으로 그 체크포인트에서 출발한다.
-안 주면 라운드마다 새 그물이라 **운전을 처음부터 다시 배운다** — 2026-09-30 실측: 단계 ③ 5 라운드가
-단계 ① 완주율 16.7% 로 끝났다(그 출발점인 M3 학생은 같은 판에서 100%).
+안 주면 라운드마다 새 그물이라 운전을 처음부터 다시 배운다.
+
+**⚠ 다만 `--init` 만으로는 안 된다.** 웜스타트는 정확히 작동하지만(0 에포크면 입력과 비트 동일),
+**1 에포크만 학습해도 무너진다.** 원인은 학습률도 스쿼시 정렬도 아니고 **데이터 방향**이다 — 같은
+거리를 무작위로 움직이면 83.3% 로 버티는데 단계 ③ 라벨 쪽으로 움직이면 0% 다. 손실에 **"알던 것을
+유지하라" 는 항이 없어서**, 새 라벨이 옛 해와 불화하면 옛 해를 버리는 쪽이 항상 이긴다.
+자세한 것은 [docs/reports/m4l-bc-damage.md](docs/reports/m4l-bc-damage.md).
 
     env -u PYTHONPATH .venv/bin/python scripts/run_dagger.py \
         --out runs/$(hostname)/$(date +%F)-dagger-s3 --stage stage3 --variants 4 \
@@ -98,6 +103,7 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 - [docs/reports/m4h-stage3-teacher.md](docs/reports/m4h-stage3-teacher.md) — **★ 단계 ③ 에서 선생님이 지는 지점**(+ [해석](docs/reports/m4h-stage3-notes.md))
 - [docs/reports/m4i-student-stage3.md](docs/reports/m4i-student-stage3.md) — M3 학생은 단계 ③ 에서 **0/18**(전부 충돌)
 - [docs/reports/m4j-obs-diag.md](docs/reports/m4j-obs-diag.md) — 학생은 물체를 **보고도 무시한다**(관측은 멀쩡하다)
+- [docs/reports/m4l-bc-damage.md](docs/reports/m4l-bc-damage.md) — **★ BC 는 왜 좋은 정책을 파괴하는가**(손실에 '유지' 항이 없다)
 
 ### 여기까지 온 곳
 **PPO 는 M3 모방 학생을 한 번도 못 넘었다 — 학습의 어느 시점에서도.** 목표 판정은 M4a 부터 지금까지
