@@ -34,6 +34,7 @@ import json
 import multiprocessing as mp
 import os
 import platform
+import shutil
 import sys
 import time
 
@@ -67,6 +68,34 @@ DEFAULT_REPORT_NAME = "report.md"
 #: 예전과 한 글자도 안 달라지게 하려는 것이다(옛 성적표와 나란히 놓고 읽는다).
 STAGE_LABELS = {"stage1": "단계 ①", "stage2": "단계 ②", "stage3": "단계 ③",
                 "stage4": "단계 ④", "stage5": "단계 ⑤"}
+
+#: 어느 라운드를 **채택**하는가(`--select`). 기본은 `last` — 예전 그대로다.
+SELECT_CHOICES = ("last", "best")
+
+#: 선택 기준(`--select-metric`).
+#:  * `primary`            — **예전 기준**. 첫 평가 단계(`primary`)의 완주율만 본다.
+#:  * `retain-then-learn`  — 첫 평가 단계(**유지**)가 `--select-floor` 이상인 라운드 중에서
+#:                           마지막 평가 단계(**학습**) 완주율이 가장 높은 라운드.
+SELECT_METRICS = ("primary", "retain-then-learn")
+
+#: `--select-metric` 을 안 줬을 때 `--select` 가 정하는 기본 기준. 둘을 묶어 두는 이유:
+#:  * `last`(기본 실행) → `primary`. 성적표의 "가장 좋았던 라운드" 줄이 **한 글자도 안 바뀐다**
+#:    (커밋된 M3 성적표가 그 줄을 들고 있다 — `가장 좋았던 라운드: 4`).
+#:  * `best` → `retain-then-learn`. 라운드를 진짜로 고르러 왔으면 이 마일스톤의 기준이 기본이다.
+#:    `--select best` 를 주고 기준을 깜빡하면 **단계 ① 만 보는 옛 기준**으로 단계 ③ 실행을
+#:    고르게 되는데, 그건 "아무것도 안 배운 라운드" 를 뽑는 길이다.
+DEFAULT_SELECT_METRIC = {"last": "primary", "best": "retain-then-learn"}
+
+#: `retain-then-learn` 의 유지 문턱(완주율). 단계 ① 은 **독립 판이 6 개**라 해상도가
+#: 16.7 점이고, "한 판만 잃었다" 가 5/6 = 83.3% 다. 문턱을 5/6 으로 그대로 쓰면 실측값
+#: 0.8333… 의 부동소수 표현 하나로 라운드가 떨어질 수 있어 **그 아래**로 둔다. 4/6=66.7%
+#: 보다는 위라 "두 판 잃음" 은 확실히 떨어진다.
+SELECT_FLOOR = 0.8
+
+#: 채택된 라운드 체크포인트의 **복사본** 이름. 심링크가 아니라 복사다 — 산출물 폴더는
+#: 머신 사이를 rsync·zip·scp 로 옮겨 다니는데 그 과정에서 심링크는 깨지거나 풀리고,
+#: 깨진 심링크는 "조용히 없는 파일" 이 된다. 300 KB 한 벌이 그보다 싸다.
+BEST_CKPT_NAME = "policy-best.pt"
 
 
 def stage_label(name: str) -> str:
@@ -110,6 +139,77 @@ def resolve_stages(stage, eval_stage):
     collect = list(stage) or list(DEFAULT_COLLECT_STAGES)
     evals = list(eval_stage) or list(DEFAULT_EVAL_STAGES)
     return collect, evals
+
+
+def select_stages(eval_names):
+    """`(유지 단계, 학습 단계)` — **앞이 유지, 뒤가 학습**이다.
+
+    평가 단계를 준 순서가 그대로 뜻이 된다(`resolve_stages` 와 같은 규칙). 단계 ①②③ 을
+    주면 유지는 ①, 학습은 ③ 이다. 단계가 하나뿐이면 둘이 같은 단계가 되고, 그러면 문턱이
+    공허해져 `retain-then-learn` 은 사실상 `primary` 와 같아진다 — 그게 맞다.
+    """
+    names = list(eval_names or [])
+    if not names:
+        raise ValueError("평가 단계가 없다 — 선택 기준을 세울 수 없다")
+    return names[0], names[-1]
+
+
+def gated_rounds(rounds, retain: str, floor: float) -> list:
+    """유지 단계 완주율이 문턱 이상인 라운드들(없으면 빈 목록)."""
+    return [r for r in rounds if r[retain]["goal_rate"] >= floor]
+
+
+def pick_round(rounds, select, metric=None, eval_names=None, floor: float = SELECT_FLOOR):
+    """**채택할** 라운드 한 줄을 돌려준다. 이 함수 하나가 최종 평가·요약·산출 체크포인트를 정한다.
+
+    ★ 왜 기준이 두 단계를 같이 보는가. 한 단계만 보면 어느 쪽이든 망한다 —
+    학습 단계(③)만 보면 **유지(①)를 부순 라운드**가 뽑히고, 유지만 보면 **아무것도 안 배운
+    라운드**가 뽑힌다. 이 마일스톤의 목표가 "① 을 지키면서 ③ 을 배운다" 이므로 기준도 그
+    모양이어야 한다: **유지가 문턱 이상인 라운드 중에서 학습 최대**.
+
+    문턱을 넘은 라운드가 **하나도 없으면** 학습 최대가 아니라 **유지 최대**로 되돌린다.
+    전부 부서진 판에서 "단계 ③ 가 제일 높은 폐허" 를 뽑으면 완주율 0% 짜리 그물을 성적표
+    대표로 내보내게 된다. 되돌렸다는 사실은 `select_note` 가 문장으로 말한다.
+
+    동점이면 **더 뒤 라운드**다 — DAgger 는 라운드가 갈수록 데이터가 쌓이므로 같은 성적이면
+    뒤가 낫고, 예전 `:594` 의 동률 규칙도 그것이었다(옛 성적표가 그 규칙으로 나왔다).
+    """
+    if not rounds:
+        raise ValueError("라운드가 없다 — 고를 것이 없다")
+    if select not in SELECT_CHOICES:
+        raise ValueError(f"모르는 --select 값 {select!r} — {SELECT_CHOICES} 중 하나여야 한다")
+    if select == "last":
+        return rounds[-1]
+    metric = metric or DEFAULT_SELECT_METRIC[select]
+    if metric not in SELECT_METRICS:
+        raise ValueError(f"모르는 --select-metric 값 {metric!r} — {SELECT_METRICS} 중 하나여야 한다")
+    retain, learn = select_stages(eval_names)
+    if metric == "primary":
+        return max(rounds, key=lambda r: (r[retain]["goal_rate"], r["round"]))
+    pool = gated_rounds(rounds, retain, floor)
+    if pool:
+        return max(pool, key=lambda r: (r[learn]["goal_rate"], r[retain]["goal_rate"],
+                                        r["round"]))
+    return max(rounds, key=lambda r: (r[retain]["goal_rate"], r[learn]["goal_rate"], r["round"]))
+
+
+def select_note(select, metric, floor, rounds, eval_names) -> str:
+    """선택이 **무엇을 보고** 골랐는지 한 문장 — 성적표와 요약에 글자 그대로 들어간다.
+
+    기준이 코드 안에만 있으면 성적표를 읽는 사람이 "최선" 이 무슨 뜻인지 알 수 없다.
+    """
+    if select == "last":
+        return "마지막 라운드를 그대로 채택(선택 안 함)"
+    retain, learn = select_stages(eval_names)
+    if metric == "primary":
+        return f"`primary`: {stage_label(retain)} 완주율 최대(동점이면 더 뒤 라운드)"
+    passed = len(gated_rounds(rounds, retain, floor))
+    if not passed:
+        return (f"`retain-then-learn`: {stage_label(retain)} 완주율 ≥ {floor * 100:.1f}% 인"
+                f" 라운드가 **하나도 없어** {stage_label(retain)} 완주율 최대로 되돌렸다")
+    return (f"`retain-then-learn`: {stage_label(retain)} 완주율 ≥ {floor * 100:.1f}% 인 라운드"
+            f" {passed}/{len(rounds)} 개 중 {stage_label(learn)} 완주율 최대"
+            f"(동점이면 {stage_label(retain)}, 그다음 더 뒤 라운드)")
 
 
 def has_actors(stage_name: str) -> bool:
@@ -414,6 +514,17 @@ def main():
                         " 이 인자로 밝힌다(함수가 짐작하지 않는다)")
     ap.add_argument("--report-only", action="store_true",
                     help="라운드를 다시 돌리지 않고 --out 의 기존 log.jsonl·체크포인트만으로 성적표를 다시 만든다")
+    ap.add_argument("--select", choices=SELECT_CHOICES, default="last",
+                    help="어느 라운드를 **채택**할지(기본 last = 예전 그대로 마지막 라운드)."
+                         " best 면 최종 평가·요약·산출 체크포인트가 전부 고른 라운드가 된다 —"
+                         " M4k 에서 r3(83.3%%)를 만들어 놓고 r4(16.7%%)를 내보냈다")
+    ap.add_argument("--select-metric", choices=SELECT_METRICS, default=None,
+                    help=f"선택 기준(안 주면 --select 를 따라간다: {DEFAULT_SELECT_METRIC})."
+                         " primary 는 첫 평가 단계 완주율만 보고, retain-then-learn 은 첫 단계가"
+                         " --select-floor 이상인 라운드 중 마지막 평가 단계 완주율을 최대화한다")
+    ap.add_argument("--select-floor", type=float, default=SELECT_FLOOR,
+                    help=f"retain-then-learn 의 유지 문턱(기본 {SELECT_FLOOR}). 단계 ① 은 독립"
+                         " 판이 6 개라 해상도가 16.7 점이고 '한 판만 잃음' 이 83.3%% 다")
     a = ap.parse_args()
     if a.smoke:
         a.rounds, a.seeds, a.epochs, a.eval_seeds, a.workers = 1, 1, 2, 1, 1
@@ -421,6 +532,8 @@ def main():
         ap.error("--rounds 는 1 이상이어야 한다")
     if a.variants < 1:
         ap.error("--variants 는 1 이상이어야 한다")
+    if not 0.0 <= a.select_floor <= 1.0:
+        ap.error("--select-floor 는 완주율이라 0~1 이어야 한다")
 
     # 앞이 수집, 뒤가 평가다 — 뒤바꾸면 단계 ③ 을 모으라고 시켜 놓고 ①② 만 모은다.
     collect_names, eval_names = resolve_stages(a.stage, a.eval_stage)
@@ -515,11 +628,23 @@ def main():
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    # 마지막 라운드 체크포인트를 다시 읽어(학습 도중의 net 객체에 기대지 않고) 상세 평가를 낸다 —
+    # ★★ 채택 — 고른 라운드를 **실제로 내보낸다.** 이 변수 하나가 (1) 아래 상세 평가가 읽는
+    # 체크포인트, (2) 목표 판정, (3) 요약의 단계별 숫자, (4) `policy-best.pt` 를 전부 정한다.
+    # 예전에는 `best` 를 아래 성적표 자리에서 **계산만** 하고 여기서는 `rounds[-1]` 을 읽었다 —
+    # M4k 실측으로 r3(단계 ① 83.3%)를 만들어 놓고 r4(16.7%)를 내보냈다. 고른 라운드와
+    # 내보내는 라운드가 갈라질 길을 아예 없앤다.
+    sel_metric = a.select_metric or DEFAULT_SELECT_METRIC[a.select]
+    chosen = pick_round(rounds, a.select, sel_metric, eval_names, a.select_floor)
+    sel_note = select_note(a.select, sel_metric, a.select_floor, rounds, eval_names)
+    chosen_ckpt = os.path.join(a.out, f"policy-r{chosen['round']}.pt")
+    # 체크포인트를 다시 읽어(학습 도중의 net 객체에 기대지 않고) 상세 평가를 낸다 —
     # --report-only 에서도 그대로 쓸 수 있고, 정상 실행에서도 저장한 체크포인트가 로그의 숫자와
     # 같은 걸 낸다는 확인이 겸사겸사 된다.
-    last = rounds[-1]
-    net = DrivePolicy.load(os.path.join(a.out, f"policy-r{last['round']}.pt"), device=dev)
+    net = DrivePolicy.load(chosen_ckpt, device=dev)
+    # 뒤 단계(안 쓴 변종으로 다시 재는 평가)가 **경로 하나만** 알면 되게 복사해 둔다.
+    # 복사다 — 심링크는 rsync·zip·scp 를 지나며 깨지고, 깨진 심링크는 조용히 없는 파일이 된다.
+    best_path = os.path.join(a.out, BEST_CKPT_NAME)
+    shutil.copyfile(chosen_ckpt, best_path)
     pairs = eval_boards(eval_names, a.smoke)
     assert [n for n, _bs in pairs] == eval_names
     evs = [evaluate_policy(net, bs, seeds=eval_seeds) for _n, bs in pairs]
@@ -528,8 +653,8 @@ def main():
     # 목표 판정은 **첫 평가 단계**로 한다(기본값이면 예전과 같은 단계 ①).
     primary = eval_names[0]
     ev1, teacher1 = evs[0], teachers[0]
-    ok = (last[primary]["goal_rate"] >= 0.9
-          and last[primary]["mean_score"] >= teacher1["mean_score"] - 10.0)
+    ok = (chosen[primary]["goal_rate"] >= 0.9
+          and chosen[primary]["mean_score"] >= teacher1["mean_score"] - 10.0)
 
     if a.report_only:
         summary_line = (f"- 라운드 {len(rounds)} · 라운드마다 판 {rounds[0]['episodes']}개 · 평가 시드"
@@ -589,15 +714,24 @@ def main():
     lines += ["", "¹ 그 라운드에 새로 모은 판은 '이번 라운드에 새로 나온 그물'이 아니라 그 라운드가"
               " 시작할 때 있던 이전 라운드 체크포인트(라운드 0 은 선생님 전용)가 몰았다."]
 
-    # 가장 좋았던 라운드 — 목표 판정(last)은 그대로 두고, M4 를 위해 "될 수 있었다" 는 사실도 남긴다.
-    # 동률이면 더 뒤 라운드(round 값이 더 큰 쪽)를 고른다.
-    best = max(rounds, key=lambda r: (r[primary]["goal_rate"], r["round"]))
+    # 가장 좋았던 라운드. **`--select last`(기본)이면 기준이 `primary` 라 예전 식과 글자
+    # 하나까지 같다** — 커밋된 M3 성적표가 이 줄을 들고 있다(`가장 좋았던 라운드: 4`).
+    # `--select best` 면 이 줄이 곧 채택된 라운드이고, 바로 아래 줄이 기준을 밝힌다.
+    # 동률이면 더 뒤 라운드(round 값이 더 큰 쪽)를 고른다 — `pick_round` 안의 규칙이다.
+    last = rounds[-1]          # 아래 '정지-출발' 비교는 **마지막 라운드**를 말한다(채택과 별개)
+    best = pick_round(rounds, "best", sel_metric, eval_names, a.select_floor)
     best_ok = (best[primary]["goal_rate"] >= 0.9
               and best[primary]["mean_score"] >= teacher1["mean_score"] - 10.0)
     best_ckpt = os.path.join(a.out, f"policy-r{best['round']}.pt")
     lines += ["", f"- 가장 좋았던 라운드: {best['round']}(β={best['beta']}) — {stage_label(primary)} 완주율 "
               f"{best[primary]['goal_rate']*100:.0f}% 점수 {best[primary]['mean_score']:.1f} → 목표 두 "
               f"조건 **{'달성' if best_ok else '미달'}** · 체크포인트 `{best_ckpt}`"]
+    # 기본 실행(`--select last`)에는 이 줄이 **없다** — 성적표 문구가 예전과 한 글자도 안
+    # 달라져야 커밋된 M3 성적표를 `--report-only` 로 그대로 다시 만들 수 있다.
+    if a.select != "last":
+        lines += [f"- **채택: 라운드 {chosen['round']}** (`--select {a.select}`) — 기준 {sel_note}"
+                  f" · 이 성적표의 완주율·위반표·요약은 전부 **이 라운드**의 것이다"
+                  f" · 체크포인트 `{best_path}`(= `{chosen_ckpt}` 복사본)"]
     # 라운드가 하나뿐이면(스모크) "베스트 대 마지막" 비교가 자기 자신과의 비교라 공허하니 건너뛴다.
     # stall_start 필드가 없는 옛 로그(--report-only)도 조용히 건너뛴다.
     if len(rounds) > 1 and last.get("stall_start") is not None:
@@ -634,13 +768,17 @@ def main():
     with open(a.report, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
-    summary = {"rounds": len(rounds), "samples": last["samples"],
+    summary = {"rounds": len(rounds), "samples": chosen["samples"],
                "collect_stages": collect_names, "eval_stages": eval_names,
                "variants": a.variants, "init": a.init,
                "teacher1": {k: teacher1[k] for k in ("goal_rate", "mean_score")},
-               "target_met": ok, "report": a.report}
+               "target_met": ok, "report": a.report,
+               # 선택이 **암묵적이면 안 된다** — 무엇을 어떤 기준으로 골랐는지 요약이 들고 있다.
+               "select": a.select, "select_metric": sel_metric,
+               "select_floor": a.select_floor, "select_note": sel_note,
+               "selected_round": chosen["round"], "best_ckpt": best_path}
     for stage in eval_names:
-        summary[stage] = last[stage]
+        summary[stage] = chosen[stage]
     print(json.dumps(summary, ensure_ascii=False))
     return 0
 
