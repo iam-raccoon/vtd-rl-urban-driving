@@ -620,6 +620,32 @@ def test_마스크가_죽은_슬롯은_안_고른다():
     assert _selected(_obj_batch(fx_m=10.0, mask=1.0), cfg).all()
 
 
+def test_손실도_관측으로_고른다_라벨로_안_고른다():
+    """★ `near_object_rows` 만 잠그면 `policy_loss` 가 **그 함수를 안 쓰는** 돌연변이를 놓친다.
+
+    실제로 당했다 — 선택을 `|조향|>0.15` 로 바꾸는 돌연변이가
+    `test_선택은_관측의_전방거리로_한다`(헬퍼만 본다)를 통과했다. 그래서 손실 쪽에서도 잠근다.
+
+    `_FixedNet` 으로 예측을 고정해 **물체가 그물 출력에 영향을 안 주게** 한 뒤, 라벨만
+    맞바꾼 두 배치를 비교한다. 관측으로 고르면 "가까운 쪽 라벨" 이 무거워지고, 라벨로
+    고르면 두 배치가 **같은 값**이 된다(둘 다 큰 조향 쪽을 무겁게 하므로).
+    """
+    half = 4
+    mean = torch.zeros(2 * half, 2)
+    fixed = _FixedNet(mean, torch.zeros(2), torch.zeros(2 * half, 3))
+
+    def loss_of(near_steer, far_steer):
+        b = _cat_batch(_obj_batch(fx_m=5.0, steer=near_steer, n=half),
+                       _obj_batch(fx_m=70.0, steer=far_steer, n=half))
+        return float(policy_loss(fixed, b, TrainConfig(near_m=30.0, near_weight=10.0))[0])
+
+    near_small, near_big = loss_of(0.0, 0.9), loss_of(0.9, 0.0)
+    assert near_small != pytest.approx(near_big, rel=1e-6), "라벨만 맞바꿔도 값이 같다"
+    # 관측으로 고르면 **가까운 쪽**(라벨 0.0, 손실 작음)이 무거워져 총손실이 작아진다.
+    # 라벨로 고르면 두 배치 다 '큰 조향' 쪽을 무겁게 해서 값이 같아진다.
+    assert near_small < near_big
+
+
 def test_선택은_최근접_슬롯만_본다():
     """슬롯 0 이 최근접이다(`observation.py:128`) — 뒤쪽 슬롯을 보면 정의가 달라진다."""
     cfg = TrainConfig(near_m=30.0)
