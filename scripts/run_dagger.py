@@ -48,7 +48,8 @@ from vtd_rl.policy.collect import collect_episode  # noqa: E402
 from vtd_rl.policy.dataset import load_dir, load_shard, save_shard  # noqa: E402
 from vtd_rl.policy.evaluate import evaluate_policy, evaluate_teacher, violation_counts  # noqa: E402
 from vtd_rl.policy.net import DrivePolicy, PolicyConfig  # noqa: E402
-from vtd_rl.policy.train import TrainConfig, squash_aligned, train_epochs  # noqa: E402
+from vtd_rl.policy.train import (TrainConfig, make_reference, squash_aligned,  # noqa: E402
+                                 train_epochs)
 from vtd_rl.world.board import load_board, load_curriculum, slice_board  # noqa: E402
 
 BETAS = [1.0, 0.5, 0.25, 0.1, 0.0]
@@ -472,6 +473,21 @@ def _dry_run_lines(collect_names, eval_names, smoke, variants, seeds, rounds):
     return out
 
 
+def _preflight_lines(a, sel_metric) -> list:
+    """`--dry-run` 이 **개입과 선택**도 같이 찍는다 — 띄우기 전에 눈으로 확인하는 자리다.
+
+    M4e 에서 아무 일도 안 하는 개입(`--imitation-floor 0.3`)에 실험 한 팔을 날렸다.
+    무엇을 켰는지 모으기 전에 보여 주는 것이 그 재발을 막는 가장 싼 문이다.
+    """
+    anchor = (f"앵커: anchor_coef={a.anchor_coef:g} · 참조 = `{a.init}` 로 고정(라운드마다 안 바꾼다)"
+              if a.anchor_coef > 0.0 else "앵커: 꺼짐(anchor_coef=0, 과거 성적표와 같은 경로)")
+    near = (f"회피 가중: near_m={a.near_m:g} m · near_weight={a.near_weight:g}"
+            if a.near_m > 0.0 and a.near_weight != 1.0 else "회피 가중: 꺼짐")
+    return [anchor, near,
+            f"채택: --select {a.select} · 기준 {sel_metric} · 유지 문턱 {a.select_floor:g}",
+            f"웜스타트(--init): {a.init or '(없음 — 새 그물에서 시작한다)'}"]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", help="산출물 폴더(--dry-run 이 아니면 필수)")
@@ -525,6 +541,17 @@ def main():
     ap.add_argument("--select-floor", type=float, default=SELECT_FLOOR,
                     help=f"retain-then-learn 의 유지 문턱(기본 {SELECT_FLOOR}). 단계 ① 은 독립"
                          " 판이 6 개라 해상도가 16.7 점이고 '한 판만 잃음' 이 83.3%% 다")
+    ap.add_argument("--anchor-coef", type=float, default=0.0,
+                    help="BC 손실에 더할 **참조 정책 KL**(증류) 계수. 0(기본)이면 앵커 계산"
+                         " 자체를 안 하므로 과거 성적표와 비트 단위로 같다. 참조는 --init"
+                         " 체크포인트로 **고정**한다(라운드마다 안 바꾼다) — 그래서 >0 이면"
+                         " --init 이 반드시 있어야 한다. M4m 최선값은 10 이다")
+    ap.add_argument("--near-m", type=float, default=0.0,
+                    help="회피 가중의 '가깝다' 문턱[m] — 최근접 물체가 전방 이 거리 안인 표본의"
+                         " 손실에 --near-weight 를 곱한다(정규화한다). 0(기본)이면 가중 없음")
+    ap.add_argument("--near-weight", type=float, default=1.0,
+                    help="그 표본의 손실 배율(기본 1.0 = 가중 없음 경로). M4n 결론은 '기각'"
+                         " 이므로 기본 실행에서는 켜지 않는다")
     a = ap.parse_args()
     if a.smoke:
         a.rounds, a.seeds, a.epochs, a.eval_seeds, a.workers = 1, 1, 2, 1, 1
@@ -534,6 +561,21 @@ def main():
         ap.error("--variants 는 1 이상이어야 한다")
     if not 0.0 <= a.select_floor <= 1.0:
         ap.error("--select-floor 는 완주율이라 0~1 이어야 한다")
+    if a.anchor_coef < 0.0:
+        ap.error("--anchor-coef 는 0 이상이어야 한다")
+    if a.near_m < 0.0:
+        ap.error("--near-m 은 0 이상이어야 한다")
+    if a.near_weight <= 0.0:
+        # 0 이면 그 표본이 사라지고, 전부 0 이면 가중치 합이 0 이라 손실이 NaN 이다.
+        ap.error("--near-weight 는 0 보다 커야 한다")
+    if a.anchor_coef > 0.0 and not a.init:
+        # 앵커는 "알던 것을 유지하라" 다 — 유지할 '알던 것' 이 없으면 묶을 대상이 없다.
+        # 조용히 꺼진 채로 5 라운드를 돌면 성적표에서야 드러난다.
+        ap.error("--anchor-coef 를 켜려면 --init 이 있어야 한다 — 앵커가 묶을 참조 정책이 없다")
+    # ★ `--init` 오타는 **여기서** 잡는다(dry-run 보다 앞). OMEN 에 띄우기 전 preflight 가
+    #   `--dry-run` 한 번이라, 이 검사가 그 뒤에 있으면 경로 오타를 preflight 가 놓친다.
+    if a.init and not os.path.exists(a.init):
+        ap.error(f"--init 체크포인트가 없다: {a.init}")
 
     # 앞이 수집, 뒤가 평가다 — 뒤바꾸면 단계 ③ 을 모으라고 시켜 놓고 ①② 만 모은다.
     collect_names, eval_names = resolve_stages(a.stage, a.eval_stage)
@@ -547,16 +589,14 @@ def main():
     except ValueError as exc:
         ap.error(str(exc))
 
+    sel_metric = a.select_metric or DEFAULT_SELECT_METRIC[a.select]
     if a.dry_run:
         print("\n".join(_dry_run_lines(collect_names, eval_names, a.smoke, a.variants,
-                                       a.seeds, a.rounds)))
+                                       a.seeds, a.rounds)
+                        + _preflight_lines(a, sel_metric)))
         return 0
     if not a.out:
         ap.error("--out 이 필요하다")
-    if a.init and not os.path.exists(a.init):
-        # 오타 하나로 웜스타트가 조용히 빠지고 "처음부터 다시 배우는" 실행이 되면 안 된다 —
-        # 5 라운드 몇 시간을 다 쓴 뒤에야 성적표에서 드러난다.
-        ap.error(f"--init 체크포인트가 없다: {a.init}")
     a.report = resolve_report(a.report, a.out)
 
     data_dir = os.path.join(a.out, "data")
@@ -579,6 +619,14 @@ def main():
                         " 실행이 섞인다. 지우거나 --resume 을 줘라.")
         os.makedirs(data_dir, exist_ok=True)
         rounds, t0 = [], time.perf_counter()
+
+        # ★★ 앵커의 참조는 `--init` 체크포인트로 **고정**한다 — 루프 **밖**에서 한 번 만든다.
+        # 라운드마다 다시 만들면(이전 라운드 정책으로든, 그 라운드 출발 그물로든) 참조가
+        # 라운드를 따라 흘러가고, 그러면 "무엇을 유지하라고 묶고 있는가" 가 라운드마다
+        # 달라져 계수 하나의 뜻이 사라진다. M4m 이 검증한 구성이 이 고정 참조다.
+        # 계수가 0 이면 아예 안 만든다 — 체크포인트를 한 번 더 읽지도, 메모리를 더 쓰지도
+        # 않고, `policy_loss` 가 앵커 블록을 통째로 건너뛰어 과거 성적표와 같은 경로다.
+        ref = make_reference(round_start_net(a.init, a.smoke, dev)) if a.anchor_coef > 0.0 else None
 
         for rnd in range(a.rounds):
             beta = BETAS[rnd] if rnd < len(BETAS) else 0.0
@@ -607,14 +655,22 @@ def main():
             # 손실의 `squash` 를 그물에 맞춘다 — `--init` 이 스쿼시 체크포인트(M4c 재적합 학생)면
             # 라벨을 atanh 로 옮겨 배워야 한다. 안 맞추면 tanh 정책을 clamp 가능도로 학습해
             # **웜스타트가 조용히 망가진다**. `--init` 없는 기본 경로는 둘 다 False 라 무동작이다.
-            tcfg = squash_aligned(TrainConfig(epochs=a.epochs, seed=rnd), net_r)
-            train = train_epochs(net_r, dataset, tcfg, device=dev)
+            tcfg = squash_aligned(TrainConfig(epochs=a.epochs, seed=rnd,
+                                              anchor_coef=a.anchor_coef, near_m=a.near_m,
+                                              near_weight=a.near_weight), net_r)
+            train = train_epochs(net_r, dataset, tcfg, device=dev, ref=ref)
             net_r.save(os.path.join(a.out, f"policy-r{rnd}.pt"))
 
             row = {"round": rnd, "beta": beta, "episodes": len(metas),
                    "collect_goal": sum(1 for m in metas if m["outcome"] == "goal"),
                    "samples": len(dataset), "collect_s": collect_s, "train": train,
-                   "stall_start": stall_start}
+                   "stall_start": stall_start,
+                   # 설정만 켜고 아무 일도 안 일어나는 꼴(M4e)을 **숫자로** 본다. `anchor` 는
+                   # 계수를 안 곱한 KL 이고 `near_frac` 은 가중이 실제로 걸린 비율이다 —
+                   # 둘 다 **학습기가 돌려준 값**이지 설정값을 베낀 것이 아니다.
+                   "anchor_coef": tcfg.anchor_coef, "anchor": train["anchor"],
+                   "near_m": tcfg.near_m, "near_weight": tcfg.near_weight,
+                   "near_frac": train["near_frac"]}
             # 평가는 단계마다 그 단계 이름을 열쇠로 넣는다 — 기본값이면 예전과 같은
             # `"stage1"`·`"stage2"` 가 그대로 나와 옛 로그·`--report-only` 와 호환된다.
             for stage, boards_e in eval_boards(eval_names, a.smoke):
@@ -633,7 +689,6 @@ def main():
     # 예전에는 `best` 를 아래 성적표 자리에서 **계산만** 하고 여기서는 `rounds[-1]` 을 읽었다 —
     # M4k 실측으로 r3(단계 ① 83.3%)를 만들어 놓고 r4(16.7%)를 내보냈다. 고른 라운드와
     # 내보내는 라운드가 갈라질 길을 아예 없앤다.
-    sel_metric = a.select_metric or DEFAULT_SELECT_METRIC[a.select]
     chosen = pick_round(rounds, a.select, sel_metric, eval_names, a.select_floor)
     sel_note = select_note(a.select, sel_metric, a.select_floor, rounds, eval_names)
     chosen_ckpt = os.path.join(a.out, f"policy-r{chosen['round']}.pt")
@@ -713,6 +768,23 @@ def main():
                      f"{r.get('stall_start', '—')} |" + cells)
     lines += ["", "¹ 그 라운드에 새로 모은 판은 '이번 라운드에 새로 나온 그물'이 아니라 그 라운드가"
               " 시작할 때 있던 이전 라운드 체크포인트(라운드 0 은 선생님 전용)가 몰았다."]
+    # 앵커·회피 가중을 켠 실행에만 붙는 절 — 기본 실행의 성적표 문구는 예전 그대로다.
+    # `anchor`(계수 안 곱한 KL)와 `near_frac`(가중이 걸린 비율)이 **0 이면 설정만 켜고
+    # 아무 일도 안 일어난 것**이다(M4e 의 `--imitation-floor 0.3` 이 그랬다).
+    if a.anchor_coef > 0.0 or a.near_m > 0.0:
+        lines += ["", "### 앵커·회피 가중이 실제로 걸렸는가(라운드별)", "",
+                  f"- 참조는 `{a.init}` 로 **고정**이다 — 라운드마다 안 바꾼다(라운드를 따라"
+                  " 흘러가면 계수 하나의 뜻이 라운드마다 달라진다).", "",
+                  "| 라운드 | anchor_coef | 앵커 KL | near_m | near_weight | 가중 비율 |",
+                  "|---:|---:|---:|---:|---:|---:|"]
+        for r in rounds:
+            # 옛 로그(`--report-only`)에는 이 열쇠들이 없다 — 그때는 대시로 둔다.
+            kl, frac = r.get("anchor"), r.get("near_frac")
+            lines.append(
+                f"| {r['round']} | {r.get('anchor_coef', '—')} |"
+                f" {'—' if kl is None else format(kl, '.3f')} | {r.get('near_m', '—')} |"
+                f" {r.get('near_weight', '—')} |"
+                f" {'—' if frac is None else format(frac * 100, '.1f') + '%'} |")
 
     # 가장 좋았던 라운드. **`--select last`(기본)이면 기준이 `primary` 라 예전 식과 글자
     # 하나까지 같다** — 커밋된 M3 성적표가 이 줄을 들고 있다(`가장 좋았던 라운드: 4`).
@@ -776,7 +848,9 @@ def main():
                # 선택이 **암묵적이면 안 된다** — 무엇을 어떤 기준으로 골랐는지 요약이 들고 있다.
                "select": a.select, "select_metric": sel_metric,
                "select_floor": a.select_floor, "select_note": sel_note,
-               "selected_round": chosen["round"], "best_ckpt": best_path}
+               "selected_round": chosen["round"], "best_ckpt": best_path,
+               # 개입이 켜졌는지는 요약만 봐도 알아야 한다(라운드별 실측은 log.jsonl 에 있다).
+               "anchor_coef": a.anchor_coef, "near_m": a.near_m, "near_weight": a.near_weight}
     for stage in eval_names:
         summary[stage] = chosen[stage]
     print(json.dumps(summary, ensure_ascii=False))

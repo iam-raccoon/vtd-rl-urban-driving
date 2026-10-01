@@ -100,12 +100,14 @@ def harness(rd, monkeypatch):
     monkeypatch.setattr(rd, "evaluate_teacher",
                         lambda boards, seeds=(0,): _fake_ev(1.0, 99.6))
 
-    def fake_train(net, dataset, cfg, device=None):
+    def fake_train(net, dataset, cfg, device=None, ref=None):
         seen["train"].append({
             "state": {k: v.detach().clone().cpu() for k, v in net.state_dict().items()},
-            "cfg": cfg, "squash": net.cfg.squash, "trunk": tuple(net.cfg.trunk)})
+            "cfg": cfg, "ref": ref, "squash": net.cfg.squash, "trunk": tuple(net.cfg.trunk)})
+        # `anchor`·`near_frac` 은 진짜 `train_epochs` 가 늘 돌려주는 값이고 라운드 기록이
+        # 그대로 받아 적는다 — 가짜도 같이 돌려줘야 배선을 그대로 돌릴 수 있다.
         return {"epochs": cfg.epochs, "samples": len(dataset), "loss": 0.0,
-                "control": 0.0, "turn": 0.0, "seconds": 0.0}
+                "control": 0.0, "turn": 0.0, "anchor": 0.0, "near_frac": 0.0, "seconds": 0.0}
 
     monkeypatch.setattr(rd, "train_epochs", fake_train)
     return seen
