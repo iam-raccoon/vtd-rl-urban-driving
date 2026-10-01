@@ -7,8 +7,8 @@ import torch
 from vtd_rl.policy.dataset import DaggerDataset, Shard
 from vtd_rl.policy.encode import OBJ_DIM, OBJ_N, VEC_DIM
 from vtd_rl.policy.net import DrivePolicy, PolicyConfig, _tanh_log_det
-from vtd_rl.policy.train import (TrainConfig, evaluate_labels, make_reference, policy_loss,
-                                 train_epochs)
+from vtd_rl.policy.train import (TrainConfig, evaluate_labels, make_reference, near_object_rows,
+                                 policy_loss, train_epochs)
 
 
 def toy_dataset(n=512, seed=0):
@@ -505,6 +505,171 @@ def test_anchor_lr이_진짜_학습률로_쓰인다():
         end = torch.cat([p.detach().flatten() for p in net.parameters()])
         deltas.append(float((end - start).norm()))
     assert deltas[0] > deltas[1] > deltas[2] == 0.0, deltas
+
+
+# ---------------------------------------------------------------------------
+# M4n — 회피 걸음에 표본별 가중치
+#
+# M4m 이 확정한 것: 회피는 데이터의 **2%** 다(r0 216,440 행 중 물체 30 m 안 전방 +
+# |조향|>0.15 가 4,383 행). 손실을 98% 의 평범한 주행이 지배하니 Δθ 3.80 이 거기로 갔다.
+# 그래서 **물체가 가까운 상태**의 손실을 올린다 — 라벨이 아니라 **관측**으로 고른다
+# (물체 근처 걸음의 79.4% 는 큰 조향이 아니다. 라벨로 고르면 그 다수를 버린다).
+# ---------------------------------------------------------------------------
+
+#: 전방거리 역정규화 길이[m]. `ObsConfig.obj_x` 와 **따로** 적는다 — 구현이 쓰는 상수를
+#: 테스트가 그대로 가져다 쓰면 그 상수를 바꾸는 돌연변이를 못 잡는다.
+OBJ_X_M = 80.0
+
+
+def _obj_batch(fx_m, mask=1.0, steer=0.0, n=8, slot=0):
+    """슬롯 `slot` 에 물체 하나를 둔 배치 — 전방거리와 라벨을 따로 쥔다."""
+    objs = torch.zeros(n, OBJ_N, OBJ_DIM)
+    m = torch.zeros(n, OBJ_N)
+    objs[:, slot, 0] = fx_m / OBJ_X_M            # observation.py:135 의 `_clip(fx, obj_x)`
+    m[:, slot] = mask
+    control = torch.zeros(n, 2)
+    control[:, 0] = steer
+    return (torch.zeros(n, VEC_DIM), objs, m, control, torch.zeros(n, dtype=torch.long))
+
+
+def _cat_batch(a, b):
+    return tuple(torch.cat([x, y], dim=0) for x, y in zip(a, b))
+
+
+def _selected(batch, cfg):
+    _vec, objs, mask, _control, _turn = batch
+    return near_object_rows(objs, mask, cfg)
+
+
+def test_near_m_기본값은_가중치_없음이다():
+    assert TrainConfig().near_m == 0.0
+    assert TrainConfig().near_weight == 1.0
+
+
+def test_near_m_0은_예전과_완전히_같다():
+    """기존 호출부·과거 성적표가 전부 이 보장 위에 있다 — 비트 단위로 같아야 한다."""
+    net, b = _anchor_net(0), _anchor_batch()
+    a, ap = policy_loss(net, b, TrainConfig(near_m=0.0, near_weight=7.0))
+    c, cp = policy_loss(net, b, TrainConfig())
+    assert torch.equal(a, c)
+    assert (ap["control"], ap["turn"], ap["total"]) == (cp["control"], cp["turn"], cp["total"])
+
+
+def test_near_weight_1은_가중치_없음과_같다():
+    """실험의 **대조군**이다 — near_weight=1 칸이 '가중치 없음' 과 달라지면 비교축이 깨진다."""
+    net = _anchor_net(0)
+    b = _cat_batch(_obj_batch(fx_m=5.0), _obj_batch(fx_m=70.0))
+    a, _ = policy_loss(net, b, TrainConfig(near_m=30.0, near_weight=1.0))
+    c, _ = policy_loss(net, b, TrainConfig())
+    assert torch.equal(a, c)
+
+
+def test_가중치는_정규화된다_실효학습률을_안_키운다():
+    """★ 핵심 함정 — 정규화를 빼면 near_weight 가 lr 을 같이 키워 효과를 못 가린다."""
+    net = _anchor_net(0)
+    b = _obj_batch(fx_m=5.0, n=16)               # 전부 '가까움' 인 배치
+    a, ap = policy_loss(net, b, TrainConfig(near_m=30.0, near_weight=1.0))
+    for w in (3.0, 100.0):
+        c, cp = policy_loss(net, b, TrainConfig(near_m=30.0, near_weight=w))
+        assert torch.allclose(a, c), f"전부 같은 가중치면 배율과 무관해야 한다(w={w})"
+        assert cp["control"] == pytest.approx(ap["control"], rel=1e-6)
+        assert cp["turn"] == pytest.approx(ap["turn"], rel=1e-6)
+    # 기울기까지 같아야 한다 — 손실 값만 보면 '손실은 나눴는데 역전파 경로는 안 나눈' 꼴을 놓친다
+    grads = []
+    for w in (1.0, 100.0):
+        net.zero_grad(set_to_none=True)
+        policy_loss(net, b, TrainConfig(near_m=30.0, near_weight=w))[0].backward()
+        grads.append(net.mean.weight.grad.clone())
+    assert torch.allclose(grads[0], grads[1], atol=1e-6)
+
+
+def test_가까운_표본이_실제로_더_센다():
+    """절반만 가까운 배치에서는 배율이 손실을 바꿔야 한다 — 안 바뀌면 가중이 배선 안 된 것."""
+    net = _anchor_net(0)
+    b = _cat_batch(_obj_batch(fx_m=5.0, steer=0.8), _obj_batch(fx_m=0.0, mask=0.0, steer=-0.8))
+    base, _ = policy_loss(net, b, TrainConfig(near_m=30.0, near_weight=1.0))
+    up, _ = policy_loss(net, b, TrainConfig(near_m=30.0, near_weight=10.0))
+    assert not torch.allclose(base, up), "가중이 손실을 안 바꿨다"
+    # 방향도 잠근다 — 가까운 쪽(라벨 0.8)만 쓴 손실로 수렴해야 한다('먼 쪽을 키우는' 부호 뒤집기)
+    near_only, _ = policy_loss(net, _obj_batch(fx_m=5.0, steer=0.8), TrainConfig())
+    huge, _ = policy_loss(net, b, TrainConfig(near_m=30.0, near_weight=1e6))
+    assert float(huge.detach()) == pytest.approx(float(near_only.detach()), rel=1e-4)
+
+
+def test_선택은_관측의_전방거리로_한다():
+    """`objs[:,0,0]*80` 이 near_m 안이고 전방일 때만 고른다 — 라벨을 안 본다."""
+    cfg = TrainConfig(near_m=30.0)
+    assert _selected(_obj_batch(fx_m=10.0, steer=0.0), cfg).all()      # 가깝고 안 꺾음 → 뽑는다
+    assert not _selected(_obj_batch(fx_m=70.0, steer=0.9), cfg).any()  # 멀고 크게 꺾음 → 안 뽑는다
+    assert not _selected(_obj_batch(fx_m=-10.0, steer=0.9), cfg).any() # 뒤에 있다 → 안 뽑는다
+    assert _selected(_obj_batch(fx_m=29.9), cfg).all()                 # 경계 안
+    assert not _selected(_obj_batch(fx_m=30.1), cfg).any()             # 경계 밖
+    # near_m 을 키우면 같은 배치가 뽑힌다 — 문턱이 진짜 cfg 를 따라간다
+    assert _selected(_obj_batch(fx_m=70.0), TrainConfig(near_m=80.0)).all()
+    # near_m=0(기본)은 아무도 안 고른다
+    assert not _selected(_obj_batch(fx_m=10.0), TrainConfig()).any()
+
+
+def test_마스크가_죽은_슬롯은_안_고른다():
+    """object_mask 가 0 인 슬롯의 fx 는 쓰레기다 — 0 이면 '아주 가까움' 으로 오인된다."""
+    cfg = TrainConfig(near_m=30.0)
+    assert not _selected(_obj_batch(fx_m=0.0, mask=0.0), cfg).any()
+    assert not _selected(_obj_batch(fx_m=10.0, mask=0.0), cfg).any()
+    # 같은 fx 라도 **살아 있으면** 뽑힌다 — 둘이 갈려야 마스크가 진짜 문지기다
+    assert _selected(_obj_batch(fx_m=0.0, mask=1.0), cfg).all()
+    assert _selected(_obj_batch(fx_m=10.0, mask=1.0), cfg).all()
+
+
+def test_선택은_최근접_슬롯만_본다():
+    """슬롯 0 이 최근접이다(`observation.py:128`) — 뒤쪽 슬롯을 보면 정의가 달라진다."""
+    cfg = TrainConfig(near_m=30.0)
+    assert not _selected(_obj_batch(fx_m=10.0, slot=3), cfg).any()
+
+
+def test_near_frac이_가중_비율을_보고한다():
+    """실데이터에서 가중이 **몇 %에 걸렸나** — 0 이면 아무 일도 안 일어난 것이다."""
+    net = _anchor_net(0)
+    b = _cat_batch(_obj_batch(fx_m=5.0, n=4), _obj_batch(fx_m=70.0, n=12))
+    assert policy_loss(net, b, TrainConfig(near_m=30.0))[1]["near_frac"] == pytest.approx(0.25)
+    assert policy_loss(net, b, TrainConfig())[1]["near_frac"] == 0.0
+
+
+def test_near_weight가_0이하면_거부한다():
+    """가중치 합이 0 이면 손실이 NaN 이다 — 격자 한 팔이 조용히 죽는다."""
+    net = _anchor_net(0)
+    b = _obj_batch(fx_m=5.0)
+    with pytest.raises(ValueError, match="near_weight"):
+        policy_loss(net, b, TrainConfig(near_m=30.0, near_weight=0.0))
+
+
+def test_가중이_학습_경로까지_닿는다():
+    """손실만 바뀌고 `train_epochs` 가 안 쓰면 격자 전체가 같은 실험이 된다."""
+    deltas = []
+    for weight in (1.0, 50.0):
+        net = _anchor_net(0)
+        ds = _near_dataset()
+        start = torch.cat([p.detach().flatten().clone() for p in net.parameters()])
+        train_epochs(net, ds, TrainConfig(epochs=2, seed=0, lr=1e-2, batch_size=32,
+                                          near_m=30.0, near_weight=weight))
+        end = torch.cat([p.detach().flatten() for p in net.parameters()])
+        deltas.append(float((end - start).norm()))
+    assert deltas[0] != pytest.approx(deltas[1], rel=1e-6), deltas
+
+
+def _near_dataset(n=128, seed=0):
+    """절반은 물체가 5 m 앞, 절반은 물체 없음 — 두 쪽의 정답이 다르다(가중이 뜻을 갖게)."""
+    rng = np.random.default_rng(seed)
+    vec = rng.standard_normal((n, VEC_DIM)).astype(np.float32)
+    objs = np.zeros((n, OBJ_N, OBJ_DIM), np.float32)
+    mask = np.zeros((n, OBJ_N), np.float32)
+    objs[: n // 2, 0, 0] = 5.0 / OBJ_X_M
+    mask[: n // 2, 0] = 1.0
+    control = np.stack([np.tanh(vec[:, 0]), np.tanh(vec[:, 1])], axis=1).astype(np.float32)
+    control[: n // 2, 0] = 0.9                   # 가까운 쪽은 크게 꺾는다
+    turn = (vec[:, 2] > 0).astype(np.int64)
+    ds = DaggerDataset()
+    ds.add(Shard(vec, objs, mask, control, turn, {"board": "near"}))
+    return ds
 
 
 def test_atanh_eps_기본값은_실측으로_고른_1e_2다():

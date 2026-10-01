@@ -12,9 +12,19 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
+from vtd_rl.env.observation import ObsConfig
 from vtd_rl.policy.net import _tanh_log_det
 
 LOG_2PI = math.log(2.0 * math.pi)
+
+#: 물체 전후거리 역정규화 길이[m]. 관측이 `_clip(fx, cfg.obj_x)` 로 넣으므로
+#: (`env/observation.py:135`) 미터로 되돌리려면 **같은 값**을 곱해야 한다. 상수를 다시 적지
+#: 않고 관측 설정에서 가져온다 — 둘이 어긋나면 "30 m 안" 이 조용히 다른 거리가 된다.
+OBJ_X_M = ObsConfig().obj_x          # 80.0 — WorldConfig.object_range 와 같은 값
+
+#: 물체 슬롯은 자차에서 가까운 순으로 찬다(`env/observation.py:128`) — 0 번이 최근접이다.
+NEAREST_SLOT = 0
+FX_COL = 0                           # objs 12 칸 중 0 번 = 전후거리(`env/observation.py:135`)
 
 
 @dataclass(frozen=True)
@@ -46,6 +56,11 @@ class TrainConfig:
     anchor_lr: float | None = None   # 주면 `lr` 대신 쓴다(웜스타트용 낮은 학습률).
                                      # `None` 이 "안 줬다" 다 — **0.0 은 진짜 0** 이라
                                      # `or` 가 아니라 `is None` 으로 가른다(effective_lr).
+    near_m: float = 0.0              # >0 이면 "최근접 물체가 **전방 이 거리 안**" 인 표본의
+                                     # 손실에 `near_weight` 를 곱한다(M4n). 0 이면 가중치를
+                                     # 아예 안 계산하므로 기존 호출부와 **비트 단위로 같다**.
+    near_weight: float = 1.0         # 그 표본의 손실 배율. 1.0 도 "가중치 없음" 경로를 탄다 —
+                                     # 실험의 대조군이 옛 숫자와 정확히 같아야 하기 때문.
 
     def effective_lr(self) -> float:
         """실제로 Adam 에 넘길 학습률. `anchor_lr` 이 있으면 그것, 없으면 `lr`.
@@ -119,6 +134,45 @@ def anchor_kl(net_out, ref_out, cfg: TrainConfig):
     return kl_c + cfg.turn_weight * kl_t
 
 
+def near_object_rows(objs, mask, cfg: TrainConfig) -> torch.Tensor:
+    """표본별 **"최근접 물체가 전방 `cfg.near_m` m 안"** 여부(bool, 모양 `(B,)`).
+
+    **라벨을 안 본다.** "물체가 가깝다" 는 **상태**의 성질이라 선생님 행동과 독립이다.
+    `|조향|>0.15` 로 고르면 선생님이 **크게 꺾은** 표본만 배우는데, M4m 실측으로 물체가
+    30 m 안에 있는 걸음의 **79.4% 는 큰 조향이 아니다** — 선생님의 회피는 대부분 작은
+    넛지다. 라벨로 고르면 그 다수를 버리고 "가까운데 그대로 간다" 를 영영 못 배운다.
+
+    ★ **`object_mask` 가 문지기다.** 죽은 슬롯의 `objs` 행은 `np.zeros` 그대로라
+    `fx` 가 **정확히 0** 이다(`env/observation.py:126`). 마스크를 안 보면 그 0 이
+    "0 m 앞" 으로 읽혀 **물체가 하나도 없는 배치 전체가 '가까움'** 이 된다 — 가중치가
+    아무 데나 걸리고 실험은 숫자만 멀쩡하다.
+
+    경계를 `fx >= 0` 으로 잡는 것도 같은 이유다. `fx > 0` 으로 하면 죽은 슬롯이 마스크가
+    아니라 **우연히** 걸러져, 마스크를 지우는 실수를 아무 테스트도 못 잡는다.
+
+    슬롯 0 은 **유클리드** 최근접이라(`env/observation.py:128`) 뒤쪽 물체일 수 있다. 그때는
+    전방 조건에서 떨어진다 — 앞 물체를 놓치는 쪽(보수적)이지 없는 것을 만들지는 않는다.
+    """
+    if cfg.near_m <= 0.0:
+        return torch.zeros(objs.shape[0], dtype=torch.bool, device=objs.device)
+    live = mask[:, NEAREST_SLOT] > 0.0
+    fx_m = objs[:, NEAREST_SLOT, FX_COL] * OBJ_X_M
+    return live & (fx_m >= 0.0) & (fx_m <= cfg.near_m)
+
+
+def sample_weights(objs, mask, cfg: TrainConfig):
+    """표본별 손실 배율 — 가중을 안 쓰면 `None`(그러면 호출부가 옛 경로를 그대로 탄다)."""
+    if cfg.near_m <= 0.0 or cfg.near_weight == 1.0:
+        return None
+    if cfg.near_weight <= 0.0:
+        raise ValueError(f"near_weight 는 0 보다 커야 한다(받은 값 {cfg.near_weight}) — "
+                         "0 이면 그 표본이 사라지고, 전부 0 이면 가중치 합이 0 이라 손실이 NaN 이다.")
+    near = near_object_rows(objs, mask, cfg)
+    return torch.where(near, torch.as_tensor(cfg.near_weight, dtype=objs.dtype,
+                                             device=objs.device),
+                       torch.ones((), dtype=objs.dtype, device=objs.device))
+
+
 def policy_loss(net, batch, cfg: TrainConfig, ref=None):
     vec, objs, mask, control, turn = batch
     mean, log_std, logits = net(vec, objs, mask)
@@ -137,8 +191,19 @@ def policy_loss(net, batch, cfg: TrainConfig, ref=None):
     else:
         target, jac = control, 0.0
     nll = 0.5 * (((target - mean) ** 2) / var + 2.0 * nll_log_std + LOG_2PI)
-    control_loss = (nll.sum(dim=-1) + jac).mean()
-    turn_loss = nn.functional.cross_entropy(logits, turn)
+    # 표본별 가중(M4n) — 안 쓰면 `None` 이라 아래 `else` 가 **예전 그대로의 식**이다.
+    w = sample_weights(objs, mask, cfg)
+    if w is not None:
+        # ★ **정규화한다**(가중 합 ÷ 가중치 합). 안 하면 `near_weight` 가 손실 전체의 크기를
+        # 같이 키워 **실효 학습률**이 따라 커진다 — 그러면 효과가 "회피를 더 봤다" 때문인지
+        # "더 세게 밟았다" 때문인지 가를 수 없다. 이것이 이 변경의 핵심 함정이다.
+        # 덤으로 손실이 가중 평균이라 **앵커 계수의 뜻도 안 변한다**(데이터 항의 크기가 그대로다).
+        wsum = w.sum()
+        control_loss = ((nll.sum(dim=-1) + jac) * w).sum() / wsum
+        turn_loss = (nn.functional.cross_entropy(logits, turn, reduction="none") * w).sum() / wsum
+    else:
+        control_loss = (nll.sum(dim=-1) + jac).mean()
+        turn_loss = nn.functional.cross_entropy(logits, turn)
     total = control_loss + cfg.turn_weight * turn_loss
     # 앵커 — `ref` 가 있고 계수가 켜져 있을 때만 계산한다. 계수가 0 이면 아래 블록을 통째로
     # 건너뛰므로 `total` 이 예전과 **같은 텐서 그래프**다(비트 단위 동일, M4m Global Constraints).
@@ -156,10 +221,14 @@ def policy_loss(net, batch, cfg: TrainConfig, ref=None):
                              (ref_mean, ref_log_std.detach(), ref_logits), cfg)
         total = total + cfg.anchor_coef * anchor_t
         anchor = float(anchor_t.item())
+    # `near_frac` 은 **가중이 실제로 몇 %에 걸렸나** — 실데이터에서 이 값이 0 이면 설정은
+    # 켰는데 아무 일도 안 일어난 것이다(M4m 실측 기대값: near_m=30 이면 약 11.4%).
+    near_frac = (float(near_object_rows(objs, mask, cfg).float().mean().item())
+                 if cfg.near_m > 0.0 else 0.0)
     return total, {"control": float(control_loss.item()), "turn": float(turn_loss.item()),
                    # `anchor` 는 **계수를 안 곱한** KL 이다 — 계수를 바꿔 가며 비교할 때
                    # 같은 자로 재야 한다(성적표가 이 값을 설정끼리 나란히 놓는다).
-                   "anchor": anchor, "total": float(total.item())}
+                   "anchor": anchor, "near_frac": near_frac, "total": float(total.item())}
 
 
 def train_epochs(net, dataset, cfg: TrainConfig = TrainConfig(), device=None, log=None,
@@ -177,7 +246,8 @@ def train_epochs(net, dataset, cfg: TrainConfig = TrainConfig(), device=None, lo
     gen = torch.Generator().manual_seed(cfg.seed)
     t0, last = time.perf_counter(), {}
     for epoch in range(cfg.epochs):
-        sums, batches = {"total": 0.0, "control": 0.0, "turn": 0.0, "anchor": 0.0}, 0
+        sums = {"total": 0.0, "control": 0.0, "turn": 0.0, "anchor": 0.0, "near_frac": 0.0}
+        batches = 0
         for batch in dataset.batches(cfg.batch_size, generator=gen, device=device):
             loss, parts = policy_loss(net, batch, cfg, ref=ref)
             opt.zero_grad(set_to_none=True)
@@ -191,13 +261,15 @@ def train_epochs(net, dataset, cfg: TrainConfig = TrainConfig(), device=None, lo
         last = {"epoch": epoch, "loss": sums["total"] / max(batches, 1),
                 "control": sums["control"] / max(batches, 1),
                 "turn": sums["turn"] / max(batches, 1),
-                "anchor": sums["anchor"] / max(batches, 1)}
+                "anchor": sums["anchor"] / max(batches, 1),
+                "near_frac": sums["near_frac"] / max(batches, 1)}
         if log is not None:
             log(last)
     net.eval()
     return {"epochs": cfg.epochs, "samples": len(dataset), "loss": last.get("loss", float("nan")),
             "control": last.get("control", float("nan")), "turn": last.get("turn", float("nan")),
-            "anchor": last.get("anchor", float("nan")), "lr": cfg.effective_lr(),
+            "anchor": last.get("anchor", float("nan")),
+            "near_frac": last.get("near_frac", float("nan")), "lr": cfg.effective_lr(),
             "seconds": time.perf_counter() - t0}
 
 
