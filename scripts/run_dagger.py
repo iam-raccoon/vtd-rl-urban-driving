@@ -485,7 +485,9 @@ def _preflight_lines(a, sel_metric) -> list:
             if a.near_m > 0.0 and a.near_weight != 1.0 else "회피 가중: 꺼짐")
     return [anchor, near,
             f"채택: --select {a.select} · 기준 {sel_metric} · 유지 문턱 {a.select_floor:g}",
-            f"웜스타트(--init): {a.init or '(없음 — 새 그물에서 시작한다)'}"]
+            f"웜스타트(--init): {a.init or '(없음 — 새 그물에서 시작한다)'}",
+            f"배치 순서 시드: 라운드 rnd 는 {a.train_seed} + rnd"
+            + ("  ← 예전 그대로(rnd)" if a.train_seed == 0 else "")]
 
 
 def main():
@@ -520,7 +522,15 @@ def main():
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--seed", type=int, default=0,
                     help="라운드마다 그물을 새로 짓기 전에 거는 torch 시드(라운드 rnd 에는 seed+rnd) —"
-                        " 없으면 전역 RNG 상태에 따라 초기값이 실행마다 달라진다")
+                        " 없으면 전역 RNG 상태에 따라 초기값이 실행마다 달라진다."
+                        " ⚠ **`--init` 을 주면 가중치를 체크포인트에서 읽어 효과가 없다** —"
+                        " '학습 시드' 를 흔들려면 --train-seed 를 써라")
+    ap.add_argument("--train-seed", type=int, default=0,
+                    help="**배치 순서** 시드의 밑값 — 라운드 rnd 는 `train-seed + rnd` 를 쓴다"
+                        "(기본 0 이면 예전 그대로 `rnd`). M4l 실측: 같은 데이터·같은 설정에서"
+                        " 배치 순서만 바꿔도 단계 ① 완주율이 16.7%% ↔ 66.7%% 로 흔들리는데"
+                        " 손실·MAE·Δθ 는 소수 셋째 자리까지 같다. '학습 시드 3 개' 로 돌리라는"
+                        " 말은 이 인자를 0·1·2 로 세 번 돌리라는 뜻이다(--seed 가 아니다)")
     ap.add_argument("--resume", action="store_true",
                     help="--out 에 이미 log.jsonl·조각이 있어도 이어 붙인다(기본은 거부)")
     ap.add_argument("--history", action="append", default=[],
@@ -655,7 +665,10 @@ def main():
             # 손실의 `squash` 를 그물에 맞춘다 — `--init` 이 스쿼시 체크포인트(M4c 재적합 학생)면
             # 라벨을 atanh 로 옮겨 배워야 한다. 안 맞추면 tanh 정책을 clamp 가능도로 학습해
             # **웜스타트가 조용히 망가진다**. `--init` 없는 기본 경로는 둘 다 False 라 무동작이다.
-            tcfg = squash_aligned(TrainConfig(epochs=a.epochs, seed=rnd,
+            # 배치 순서 시드 = `--train-seed + rnd`. **덮어쓰지 않고 더한다** — 라운드마다
+            # 달라야 하는 것은 그대로 두고(기본 0 이면 `rnd`, 예전과 비트 동일) 세 실행이
+            # 서로 다른 배치 순서를 보게 만든다. 이것이 M4l 이 말한 "학습 시드" 다.
+            tcfg = squash_aligned(TrainConfig(epochs=a.epochs, seed=a.train_seed + rnd,
                                               anchor_coef=a.anchor_coef, near_m=a.near_m,
                                               near_weight=a.near_weight), net_r)
             train = train_epochs(net_r, dataset, tcfg, device=dev, ref=ref)
@@ -670,7 +683,10 @@ def main():
                    # 둘 다 **학습기가 돌려준 값**이지 설정값을 베낀 것이 아니다.
                    "anchor_coef": tcfg.anchor_coef, "anchor": train["anchor"],
                    "near_m": tcfg.near_m, "near_weight": tcfg.near_weight,
-                   "near_frac": train["near_frac"]}
+                   "near_frac": train["near_frac"],
+                   # 실제로 쓴 배치 순서 시드 — 시드 3 개의 로그를 나란히 놓고 읽을 때
+                   # 어느 줄이 어느 실행인지 이것으로 가른다.
+                   "train_seed": tcfg.seed}
             # 평가는 단계마다 그 단계 이름을 열쇠로 넣는다 — 기본값이면 예전과 같은
             # `"stage1"`·`"stage2"` 가 그대로 나와 옛 로그·`--report-only` 와 호환된다.
             for stage, boards_e in eval_boards(eval_names, a.smoke):
@@ -754,6 +770,13 @@ def main():
         lines.append(f"- 출발점: `{a.init}` 에서 웜스타트 — 라운드마다 **이 체크포인트**에서 다시"
                      " 시작한다(이전 라운드 그물을 이어 쓰지 않아 에폭이 안 쌓인다). 이 성적표의"
                      " 완주율은 '처음부터 배운 결과' 가 아니라 '그 학생을 이 단계에 더 얹은 결과' 다.")
+    # 기본값(0)이면 줄 자체를 안 넣는다 — 그때는 예전과 같은 `rnd` 라 밝힐 것이 없고,
+    # 성적표 문구가 한 글자도 안 달라져야 커밋된 M3 성적표를 그대로 다시 만든다.
+    if a.train_seed:
+        lines.append(f"- 배치 순서 시드: 라운드 rnd 는 `{a.train_seed} + rnd` — M4l 실측으로 같은"
+                     " 데이터·같은 설정이라도 **배치 순서만 바꾸면** 단계 ① 완주율이 16.7% ↔"
+                     " 66.7% 로 흔들린다. 이 성적표는 **시드 하나**의 결과이지 그 설정의"
+                     " 결과가 아니다.")
     lines += [
         zero_shot_line, "",
         "| 라운드 | β | 수집 판(완주) | 누적 표본 | 손실 | 정지-출발 표본¹ | "
@@ -850,7 +873,8 @@ def main():
                "select_floor": a.select_floor, "select_note": sel_note,
                "selected_round": chosen["round"], "best_ckpt": best_path,
                # 개입이 켜졌는지는 요약만 봐도 알아야 한다(라운드별 실측은 log.jsonl 에 있다).
-               "anchor_coef": a.anchor_coef, "near_m": a.near_m, "near_weight": a.near_weight}
+               "anchor_coef": a.anchor_coef, "near_m": a.near_m, "near_weight": a.near_weight,
+               "train_seed": a.train_seed}
     for stage in eval_names:
         summary[stage] = chosen[stage]
     print(json.dumps(summary, ensure_ascii=False))
