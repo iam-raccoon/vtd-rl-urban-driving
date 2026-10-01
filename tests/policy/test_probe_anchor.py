@@ -61,10 +61,30 @@ def _fake_eval(goal=0.5):
     def evaluate(net):
         seen.append(net)
         return {"stage1": {"goal_rate": goal, "mean_score": 90.0,
-                           "mean_score_completed": 95.0, "mean_reward": 10.0},
+                           "mean_score_completed": 95.0, "mean_reward": 10.0,
+                           "total_steps": 4000},
                 "stage3": {"goal_rate": 0.0, "mean_score": 50.0,
-                           "mean_score_completed": None, "mean_reward": 1.0}}
+                           "mean_score_completed": None, "mean_reward": 1.0,
+                           "total_steps": 8149}}
     return evaluate, seen
+
+
+def _near_dataset(n=256, seed=0):
+    """절반은 물체가 5 m 앞, 절반은 물체 없음 — 가중이 뜻을 갖는 자료(두 쪽 정답이 다르다)."""
+    from vtd_rl.policy.dataset import DaggerDataset, Shard
+    from vtd_rl.policy.encode import OBJ_DIM, OBJ_N, VEC_DIM
+    rng = np.random.default_rng(seed)
+    vec = rng.standard_normal((n, VEC_DIM)).astype(np.float32)
+    objs = np.zeros((n, OBJ_N, OBJ_DIM), np.float32)
+    mask = np.zeros((n, OBJ_N), np.float32)
+    objs[: n // 2, 0, 0] = 5.0 / 80.0            # 전방 5 m (obj_x = 80 m 정규화)
+    mask[: n // 2, 0] = 1.0
+    control = np.stack([np.tanh(vec[:, 0]), np.tanh(vec[:, 1])], axis=1).astype(np.float32)
+    control[: n // 2, 0] = 0.9
+    turn = (vec[:, 2] > 0).astype(np.int64)
+    ds = DaggerDataset()
+    ds.add(Shard(vec, objs, mask, control, turn, {"board": "near"}))
+    return ds
 
 
 # --- 인자 파싱 -------------------------------------------------------------
@@ -176,6 +196,37 @@ def test_anchor_lr이_칸의_학습률이_된다(tmp_path):
     assert base["delta_theta"] > 0.0 and low["delta_theta"] == 0.0
 
 
+def test_near_weight가_실제로_학습에_닿는다(tmp_path):
+    """★ 칸 설정에 배율만 실리고 손실까지 안 가면 격자 전체가 같은 실험 네 번이 된다."""
+    from vtd_rl.policy.train import TrainConfig
+    m = _load()
+    init, ds = _checkpoint(tmp_path), _near_dataset()
+    evaluate, _seen = _fake_eval()
+    losses = []
+    for weight in (1.0, 50.0):
+        row = m.run_cell(init, ds, TrainConfig(epochs=2, seed=0, lr=1e-2, batch_size=32,
+                                               near_m=30.0, near_weight=weight),
+                         torch.device("cpu"), evaluate)
+        assert row["near_m"] == 30.0 and row["near_weight"] == weight
+        assert row["near_frac"] == pytest.approx(0.5, abs=0.1)   # 절반이 '가까움' 인 자료다
+        losses.append(row["loss"])
+    assert losses[0] != pytest.approx(losses[1], rel=1e-9), losses
+
+
+def test_near_m_0이면_가중이_안_걸린다(tmp_path):
+    """기본값이 '가중치 없음' 이어야 과거 성적표와 같은 자리에 선다."""
+    from vtd_rl.policy.train import TrainConfig
+    m = _load()
+    init, ds = _checkpoint(tmp_path), _near_dataset()
+    evaluate, _seen = _fake_eval()
+    rows = [m.run_cell(init, ds, TrainConfig(epochs=1, seed=0, lr=1e-2, batch_size=32,
+                                             near_m=0.0, near_weight=w),
+                       torch.device("cpu"), evaluate) for w in (1.0, 50.0)]
+    assert all(r["near_frac"] == 0.0 for r in rows)
+    assert rows[0]["loss"] == rows[1]["loss"]
+    assert rows[0]["delta_theta"] == rows[1]["delta_theta"]
+
+
 def test_손실의_스쿼시가_그물을_따라간다(tmp_path):
     """★ M3 체크포인트는 `squash=True` 다. 안 맞추면 tanh 정책을 clamp 가능도로 학습해
 
@@ -206,11 +257,14 @@ def test_요약은_평균과_범위를_같이_낸다():
     assert s3 == {"n": 0, "mean": None, "min": None, "max": None}
 
 
-def _rows(spec):
+def _rows(spec, weight=1.0, steps=(4000, 8149)):
     """`spec` = [(계수, 시드, 단계① 완주율, 단계③ 완주율), ...] → 행 목록."""
     return [{"anchor_coef": c, "seed": s, "delta_theta": 0.5, "loss": -1.0, "anchor": 0.25,
-             "stages": {"stage1": {"goal_rate": g1, "mean_score": 90.0},
-                        "stage3": {"goal_rate": g3, "mean_score": 50.0}}}
+             "near_m": 30.0 if weight != 1.0 else 0.0, "near_weight": weight,
+             "stages": {"stage1": {"goal_rate": g1, "mean_score": 90.0,
+                                   "total_steps": steps[0]},
+                        "stage3": {"goal_rate": g3, "mean_score": 50.0,
+                                   "total_steps": steps[1]}}}
             for c, s, g1, g3 in spec]
 
 
@@ -237,18 +291,104 @@ def test_표는_유지와_학습을_나란히_놓는다():
 def test_표는_판정하지_않는다():
     """★ 문턱은 계획서에 미리 적혀 있다. 스크립트가 합격을 찍으면 결과를 보고 문턱을 고치게 된다."""
     m = _load()
-    rows = _rows([(0.0, 0, 1.0, 0.5), (10.0, 0, 0.0, 0.0)])
+    rows = (_rows([(0.0, 0, 1.0, 0.5), (10.0, 0, 0.0, 0.0)])
+            + _rows([(10.0, 1, 1.0, 0.5)], weight=50.0))      # 회피 가중 주의문구까지 포함
     text = "\n".join(m.table_lines(rows, ["stage1", "stage3"])
                      + m.caveat_lines(rows, 3, ["stage1", "stage3"]))
     for word in ("합격", "불합격", "달성", "미달", "듣는다", "PASS", "FAIL"):
         assert word not in text, word
 
 
-def test_계수별로_묶되_순서를_지킨다():
+def test_가중을_쓴_표는_선택_정의를_적는다():
+    """성적표가 그대로 옮겨 쓸 한계다 — 라벨이 아니라 관측으로 골랐고, 제동은 안 셌다."""
+    m = _load()
+    with_w = "\n".join(m.caveat_lines(_rows([(10.0, 0, 1.0, 0.0)], weight=50.0), 3, ["stage3"]))
+    assert "near_m" in with_w and "object_mask" in with_w and "라벨" in with_w
+    without = "\n".join(m.caveat_lines(_rows([(10.0, 0, 1.0, 0.0)]), 3, ["stage3"]))
+    assert "object_mask" not in without      # 안 쓴 실험에 안 쓴 한계를 적지 않는다
+
+
+def test_칸별로_묶되_순서를_지킨다():
     m = _load()
     rows = _rows([(0.0, 0, 1.0, 0.0), (10.0, 0, 1.0, 0.0), (0.0, 1, 1.0, 0.0)])
-    assert [c for c, _b in m.group_by_coef(rows)] == [0.0, 10.0]
-    assert [len(b) for _c, b in m.group_by_coef(rows)] == [2, 1]
+    assert [k for k, _b in m.group_cells(rows)] == [(0.0, 1.0), (10.0, 1.0)]
+    assert [len(b) for _k, b in m.group_cells(rows)] == [2, 1]
+    # 옛 행에는 `near_weight` 가 없다(M4m `rows.jsonl`) — 그때는 가중치가 없었으니 1.0 이다
+    old = [{"anchor_coef": 0.0, "seed": 9}]
+    assert m.cell_key(old[0]) == (0.0, 1.0)
+
+
+def test_가중치가_다르면_다른_칸이다():
+    """★ 계수로만 묶으면 near_weight 1 과 50 이 한 칸에 섞여 평균이 난다 — 격자가 사라진다."""
+    m = _load()
+    rows = (_rows([(10.0, 0, 1.0, 0.0)], weight=1.0)
+            + _rows([(10.0, 0, 1.0, 0.0)], weight=50.0))
+    assert [k for k, _b in m.group_cells(rows)] == [(10.0, 1.0), (10.0, 50.0)]
+    body = [ln for ln in m.table_lines(rows, ["stage3"]) if ln.startswith("| 10 |")]
+    assert len(body) == 2, body
+    assert "| 10 | 50 |" in body[1], body[1]
+
+
+# --- "얼마나 멀리 갔나" (총걸음) ------------------------------------------
+
+def test_총걸음은_판별_걸음의_합이다(monkeypatch):
+    """★ **합**이다. M4m 성적표가 비교한 기준점 8149 는 18 판의 합이라 같은 자로 재야 한다.
+
+    평균으로 세면 판 수·시드 수가 바뀔 때 조용히 다른 값이 되고 옛 숫자와 비교가 끊긴다.
+    """
+    import types
+    m = _load()
+    steps = [100, 250, 7]
+
+    def fake(net, boards, seeds=(0,)):
+        return {"goal_rate": 0.0, "mean_score": 50.0, "mean_score_completed": None,
+                "mean_reward": 1.0,
+                "episodes": [types.SimpleNamespace(steps=s) for s in steps]}
+
+    monkeypatch.setattr(m, "evaluate_policy", fake)
+    out = m.evaluate_all(object(), [("stage3", ["판"])], 3)
+    assert out["stage3"]["total_steps"] == 357
+    assert out["stage3"]["total_steps"] != pytest.approx(sum(steps) / len(steps))   # 평균 아님
+    assert out["stage3"]["goal_rate"] == 0.0            # 나머지 열도 그대로 온다
+
+
+def test_표가_총걸음과_기준점비를_낸다():
+    """완주율이 0 이어도 **더 멀리 가는지**를 이 두 열로 본다(M4m 은 던져 버리는 스크립트로 쟀다)."""
+    m = _load()
+    rows = _rows([(10.0, 0, 1.0, 0.0)], steps=(4000, 8149))
+    base = {"stages": {"stage1": {"goal_rate": 1.0, "mean_score": 90.0, "total_steps": 4000},
+                       "stage3": {"goal_rate": 0.0, "mean_score": 50.0, "total_steps": 7408}}}
+    lines = m.table_lines(rows, ["stage1", "stage3"], base)
+    assert "총걸음" in lines[0] and "기준점비" in lines[0]
+    base_line = [ln for ln in lines if "— (학습 전)" in ln][0]
+    assert "7408" in base_line and "100.0%" in base_line, base_line
+    row = [ln for ln in lines if ln.startswith("| 10 |")][0]
+    assert "8149" in row and "110.0%" in row, row       # 8149 / 7408 = 110.0%
+
+
+def test_기준점이_없으면_비율을_안_지어낸다():
+    m = _load()
+    row = [ln for ln in m.table_lines(_rows([(10.0, 0, 1.0, 0.0)]), ["stage3"])
+           if ln.startswith("| 10 |")][0]
+    assert "8149" in row and "%" not in row.split("8149")[1], row
+
+
+def test_칸_안에서는_총걸음을_평균낸다():
+    """★ 시드끼리는 **평균**이다 — 합으로 세면 시드를 더 돌렸다고 숫자가 커져 칸끼리 비교가 깨진다."""
+    m = _load()
+    rows = (_rows([(10.0, 0, 1.0, 0.0)], steps=(4000, 100))
+            + _rows([(10.0, 1, 1.0, 0.0)], steps=(4000, 300)))
+    line = [ln for ln in m.table_lines(rows, ["stage3"]) if ln.startswith("| 10 |")][0]
+    assert " 200 |" in line, line           # 평균 200
+    assert " 400 |" not in line, line       # 합 400 이 아니다
+
+
+def test_시드별_원자료에도_총걸음이_있다():
+    m = _load()
+    rows = (_rows([(10.0, 0, 1.0, 0.0)], steps=(4000, 100))
+            + _rows([(10.0, 1, 1.0, 0.0)], steps=(4000, 300)))
+    text = "\n".join(m.per_seed_lines(rows, ["stage3"]))
+    assert "100" in text and "300" in text and "총걸음" in text
 
 
 def test_시드별_원자료를_같이_찍는다():
@@ -290,6 +430,32 @@ def test_dry_run이_무엇을_돌릴지_찍는다(tmp_path):
     assert "액터 0개" in s1, s1                         # 단계 ① 은 액터가 없다(시드가 무의미한 이유)
 
 
+def test_dry_run이_가중_격자를_찍는다(tmp_path):
+    """격자 크기가 계수 × **가중 배율** × 시드다 — 띄우기 전에 이걸로 인자를 검증한다."""
+    out = _cli("--dry-run", "--init", _checkpoint(tmp_path), "--data", str(tmp_path),
+               "--coefs", "10", "--near-m", "30", "--near-weights", "1,5,20,50")
+    assert out.returncode == 0, out.stderr[-3000:]
+    assert "12 칸" in out.stdout, out.stdout            # 1 × 4 × 3
+    assert "near_m=30" in out.stdout, out.stdout
+
+
+def test_목록_인자는_전부_쉼표_구분이다(tmp_path):
+    """★ `--coefs 1 3 10` 처럼 공백으로 주면 rc=2 로 즉사한다 — 새 목록 인자도 같은 규칙이다."""
+    init = _checkpoint(tmp_path)
+    out = _cli("--dry-run", "--init", init, "--data", str(tmp_path),
+               "--near-weights", "1", "5", "20")
+    assert out.returncode == 2, out.stdout + out.stderr
+    ok = _cli("--dry-run", "--init", init, "--data", str(tmp_path), "--near-weights", "1,5,20")
+    assert ok.returncode == 0, ok.stderr[-3000:]
+
+
+def test_near_weights가_0이하면_거부한다(tmp_path):
+    """가중치 합이 0 이면 손실이 NaN 이다 — 격자 한 팔이 조용히 죽는다."""
+    out = _cli("--dry-run", "--init", _checkpoint(tmp_path), "--data", str(tmp_path),
+               "--near-m", "30", "--near-weights", "0,5")
+    assert out.returncode != 0 and "0 보다" in (out.stdout + out.stderr)
+
+
 def test_출력_파일을_덮어쓰지_않는다(tmp_path):
     """두 실행의 행이 섞이면 어느 숫자가 어느 실행인지 알 수 없다."""
     existing = tmp_path / "rows.jsonl"
@@ -326,7 +492,8 @@ def test_한_번의_실행이_표까지_낸다(tmp_path, monkeypatch, capsys):
     def fake_eval_all(net, stages, eval_seeds):
         calls.append(eval_seeds)
         return {name: {"goal_rate": 1.0 / (len(calls) % 3 + 1), "mean_score": 90.0,
-                       "mean_score_completed": 95.0, "mean_reward": 10.0}
+                       "mean_score_completed": 95.0, "mean_reward": 10.0,
+                       "total_steps": 8000 + len(calls)}
                 for name, _b in stages}
 
     monkeypatch.setattr(m, "evaluate_all", fake_eval_all)
@@ -342,6 +509,7 @@ def test_한_번의_실행이_표까지_낸다(tmp_path, monkeypatch, capsys):
 
     text = capsys.readouterr().out
     assert "anchor_coef" in text and "단계 ①" in text and "단계 ③" in text
+    assert "총걸음" in text and "기준점비" in text      # 완주율만 보면 학습을 놓친다
     assert "— (학습 전) |" in text                     # 기준점 행
     assert "시드별 원자료" in text and "주장하지 않는 것" in text
     rows = [json.loads(ln) for ln in out_path.read_text(encoding="utf-8").splitlines() if ln]
@@ -349,6 +517,36 @@ def test_한_번의_실행이_표까지_낸다(tmp_path, monkeypatch, capsys):
     assert [(r["anchor_coef"], r["seed"]) for r in rows[1:]] == [(0.0, 0), (0.0, 1),
                                                                  (1.0, 0), (1.0, 1)]
     assert calls == [3] * 5                             # --eval-seeds 가 평가까지 흘렀다
+
+
+def test_가중_격자가_칸까지_내려간다(tmp_path, monkeypatch, capsys):
+    """★ `--near-weights` 를 무시하면 격자 전체가 같은 실험의 반복이 된다 — 표만 그럴듯해진다.
+
+    값이 행에 실리는 것(기록)과 손실까지 가는 것(배선)을 **둘 다** 본다.
+    """
+    import sys
+    from vtd_rl.policy.dataset import Shard, save_shard
+    m = _load()
+    ds = _near_dataset(128)
+    save_shard(Shard(*ds.arrays(), {"board": "near"}), str(tmp_path / "data" / "r0-near-s0.npz"))
+    monkeypatch.setattr(m, "evaluate_all", lambda net, stages, seeds: {
+        name: {"goal_rate": 0.0, "mean_score": 50.0, "mean_score_completed": None,
+               "mean_reward": 1.0, "total_steps": 8149} for name, _b in stages})
+    out_path = tmp_path / "rows.jsonl"
+    argv = sys.argv
+    sys.argv = ["probe_anchor.py", "--init", _checkpoint(tmp_path), "--data",
+                str(tmp_path / "data"), "--coefs", "0", "--seeds", "0", "--epochs", "1",
+                "--near-m", "30", "--near-weights", "1,50", "--out", str(out_path)]
+    try:
+        assert m.main() == 0
+    finally:
+        sys.argv = argv
+    capsys.readouterr()
+    cells = [json.loads(ln) for ln in out_path.read_text(encoding="utf-8").splitlines() if ln][1:]
+    assert [r["near_weight"] for r in cells] == [1.0, 50.0]        # 기록
+    assert all(r["near_m"] == 30.0 for r in cells)
+    assert all(r["near_frac"] == pytest.approx(0.5, abs=0.1) for r in cells)
+    assert cells[0]["loss"] != pytest.approx(cells[1]["loss"], rel=1e-9), cells   # 배선
 
 
 def test_원자료_한_줄이_한_칸이다(tmp_path, monkeypatch):
@@ -364,6 +562,8 @@ def test_원자료_한_줄이_한_칸이다(tmp_path, monkeypatch):
                      torch.device("cpu"), evaluate)
     blob = json.loads(json.dumps(row, ensure_ascii=False))     # 직렬화가 되는가
     for key in ("anchor_coef", "seed", "epochs", "lr", "squash", "samples", "loss",
-                "anchor", "delta_theta", "theta_norm", "stages"):
+                "anchor", "near_m", "near_weight", "near_frac", "delta_theta", "theta_norm",
+                "stages"):
         assert key in blob, key
     assert blob["stages"]["stage1"]["goal_rate"] == 0.5
+    assert blob["stages"]["stage3"]["total_steps"] == 8149      # "얼마나 멀리 갔나" 도 남는다
