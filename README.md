@@ -105,6 +105,7 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 - [docs/reports/m4j-obs-diag.md](docs/reports/m4j-obs-diag.md) — 학생은 물체를 **보고도 무시한다**(관측은 멀쩡하다)
 - [docs/reports/m4l-bc-damage.md](docs/reports/m4l-bc-damage.md) — **★ BC 는 왜 좋은 정책을 파괴하는가**(손실에 '유지' 항이 없다)
 - [docs/reports/m4m-anchor.md](docs/reports/m4m-anchor.md) — KL 앵커는 **유지에 성공**, 학습은 **회피가 데이터의 2%** 라 막힌다
+- [docs/reports/m4n-weight.md](docs/reports/m4n-weight.md) — 그 2% 에 무게를 줘도 **안 배운다**(없는 상태엔 무게를 못 준다)
 
 ### 여기까지 온 곳
 **PPO 는 M3 모방 학생을 한 번도 못 넘었다 — 학습의 어느 시점에서도.** 목표 판정은 M4a 부터 지금까지
