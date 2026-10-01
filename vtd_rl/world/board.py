@@ -125,18 +125,32 @@ def slice_board(board: Board, s_from: float, s_to: float, name: str, signals: st
                  board.ego_lanes[i0:i1 + 1])
 
 
-def load_curriculum(path: str, variants: int = 1):
+def load_curriculum(path: str, variants: int = 1, offset: int = 0):
     """커리큘럼을 읽는다. `variants > 1` 이면 판마다 **변종 N 개**를 낸다.
 
-    `variants == 1` 은 예전과 완전히 같다(이름도 그대로, 흔들지도 않는다) — 기존 호출부와
-    옛 성적표가 그 이름을 그대로 쓴다.
+    `variants == 1 and offset == 0` 은 예전과 완전히 같다(이름도 그대로, 흔들지도 않는다) —
+    기존 호출부와 옛 성적표가 그 이름을 그대로 쓴다.
+
+    `offset` 은 **변종 번호가 어디서 시작하는가**다 — `v{offset} … v{offset+variants-1}`.
+    수집이 `v0~v3` 를 썼을 때 **안 쓴 변종**(`v4~v7`)으로 다시 평가하려고 연 길이다
+    (M4o 계측 규칙: 고른 판으로 성적을 내면 라운드 5 개 중 최선을 고른 편향이 그대로
+    성적표에 들어간다).
+
+    ★ 배치는 `(판 이름, 변종 번호)` 로**만** 정해진다(`world/place.py` 의 `jitter_rng`·
+    `s_offset`). 그래서 `variants=8` 로 짓고 뒤 4 벌을 고른 것과 `variants=4, offset=4` 가
+    **같은 판**이다 — 그 성질이 없으면 "안 쓴 변종" 이라는 말 자체가 뜻을 잃는다.
+    `tests/test_stage3.py::test_오프셋_변종은_큰_묶음에서_고른_것과_같은_판이다` 가 잠근다.
     """
     if variants < 1:
         raise ValueError(f"variants 는 1 이상이어야 한다: {variants}")
+    if offset < 0:
+        raise ValueError(f"offset 은 0 이상이어야 한다: {offset}")
     with open(path, encoding="utf-8") as f:
         d = json.load(f)
     _check_keys(d, CURRICULUM_KEYS, f"커리큘럼 '{path}'")
-    if variants == 1:
+    # `offset > 0` 이면 이 지름길을 타면 안 된다 — 안 쓴 변종을 달라고 했는데 조용히
+    # 원본(꼬리표 없는 v 아님)이 나온다.
+    if variants == 1 and offset == 0:
         return d["name"], [load_board(e, d["signals"]) for e in d["boards"]]
     return d["name"], [load_board(e, d["signals"], variant=k)
-                       for e in d["boards"] for k in range(variants)]
+                       for e in d["boards"] for k in range(offset, offset + variants)]

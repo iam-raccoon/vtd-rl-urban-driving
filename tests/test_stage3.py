@@ -285,3 +285,83 @@ def test_변종도_달릴_수_있는_배치다():
             assert gap >= need - 1e-6, (
                 f"{b.name}: 액터{prev.id} 뒤 {gap:.0f} m 에 액터{nxt.id} — "
                 f"{need:.0f} m 는 떨어져야 한다")
+
+
+# ---------------------------------------------- 변종 창 오프셋 — "안 쓴 변종" 을 짓는다
+#
+# M4o 계측 규칙: `--select best` 는 라운드 5 개 중 최선을 고르므로 **그 평가는 잡음의
+# 상단**이다. 그래서 채택된 체크포인트를 **수집이 쓰지 않은 변종**으로 다시 잰다.
+# 그 말이 뜻을 가지려면 두 가지가 성립해야 한다 — 같은 번호는 늘 같은 판일 것,
+# 그리고 평가 창이 수집 창과 겹치지 않을 것.
+
+
+def test_오프셋_변종은_큰_묶음에서_고른_것과_같은_판이다():
+    """★★ `variants=8` 의 뒤 4 벌과 `variants=4, offset=4` 가 **같은 판**이어야 한다.
+
+    배치는 `(판 이름, 변종 번호)` 로만 정해진다(`world/place.py` 의 `jitter_rng`·
+    `s_offset`) — 총 개수가 끼어들면 "수집이 본 v0~v3" 와 "평가의 v4~v7" 의 뜻이
+    실행마다 달라진다.
+    """
+    _, big = load_curriculum("curricula/stage3.json", variants=8)
+    _, win = load_curriculum("curricula/stage3.json", variants=4, offset=4)
+    want = [b for b in big if int(b.name.split("@v")[1]) >= 4]
+    assert [b.name for b in win] == [b.name for b in want]
+    assert len(win) == 4 * 6
+    for x, y in zip(win, want):
+        assert _pos(x) == _pos(y), x.name
+
+
+def test_평가_창은_수집_창과_판이_하나도_안_겹친다():
+    """★★★ 오프셋이 조용히 0 이 되면 평가가 **수집이 본 바로 그 판**으로 돌아간다 —
+
+    선택 편향을 재려고 만든 장치가 편향을 그대로 들고 오게 된다. 이름뿐 아니라
+    **배치**까지 겹치지 않아야 한다(이름만 다르고 같은 자리면 안 쓴 판이 아니다).
+    """
+    _, seen = load_curriculum("curricula/stage3.json", variants=4)              # v0~v3
+    _, unseen = load_curriculum("curricula/stage3.json", variants=4, offset=4)  # v4~v7
+    assert {b.name for b in seen} & {b.name for b in unseen} == set()
+    assert all(b.name.endswith(("@v4", "@v5", "@v6", "@v7")) for b in unseen)
+    by_course = defaultdict(lambda: (set(), set()))
+    for b in seen:
+        by_course[b.name.split("@v")[0]][0].add(_pos(b))
+    for b in unseen:
+        by_course[b.name.split("@v")[0]][1].add(_pos(b))
+    for course, (a, c) in by_course.items():
+        assert a and c and not (a & c), f"{course}: 평가 변종이 수집 변종과 같은 배치다"
+
+
+def test_오프셋0은_예전과_완전히_같다():
+    """기존 호출부·옛 성적표가 안 바뀐다 — 오프셋 기본값은 아무 일도 안 한다."""
+    _, a = load_curriculum("curricula/stage3.json", variants=3)
+    _, b = load_curriculum("curricula/stage3.json", variants=3, offset=0)
+    assert [x.name for x in a] == [x.name for x in b]
+    for x, y in zip(a, b):
+        assert _pos(x) == _pos(y)
+    _, old = load_curriculum("curricula/stage3.json")
+    _, new = load_curriculum("curricula/stage3.json", offset=0)
+    assert [x.name for x in old] == [x.name for x in new]
+    assert all("@v" not in x.name for x in new), "기본 호출에 변종 꼬리표가 붙었다"
+
+
+def test_오프셋만_주면_변종_한_벌을_그_번호로_낸다():
+    """`variants=1, offset=4` 는 **원본이 아니라 v4** 다 — `variants==1` 지름길이 오프셋을
+
+    삼키면 안 쓴 변종을 달라고 했는데 조용히 원본이 나온다.
+    """
+    _, one = load_curriculum("curricula/stage3.json", variants=1, offset=4)
+    assert [b.name for b in one] == [f"{c}@v4" for c in
+                                     ["course_A", "course_B", "course_D", "course_E",
+                                      "course_G", "course_H"]]
+    _, big = load_curriculum("curricula/stage3.json", variants=5)
+    by = {b.name: _pos(b) for b in big}
+    for b in one:
+        assert _pos(b) == by[b.name], b.name
+
+
+def test_음수_오프셋은_터진다():
+    try:
+        load_curriculum("curricula/stage3.json", variants=2, offset=-1)
+    except ValueError as exc:
+        assert "offset" in str(exc)
+    else:
+        raise AssertionError("음수 오프셋을 받아들였다")
