@@ -1,0 +1,145 @@
+{
+  "stage": 3,
+  "name": "정지차만 — 코스당 첫 정지차 하나(차로변경), 신호 주기",
+  "signals": "cycle",
+  "boards": [
+    {
+      "name": "course_A",
+      "route": "routes/HL_FMA_NEW_A.json",
+      "lane": "routes/HL_FMA_NEW_A_lane.json",
+      "jitter": {
+        "s": 40.0,
+        "lateral": 0.6
+      },
+      "actors": [
+        {
+          "id": 301,
+          "kind": "static",
+          "type": "vehicle",
+          "s": 560.0,
+          "lateral": 0.9,
+          "size": [
+            4.5,
+            1.8,
+            1.5
+          ]
+        }
+      ]
+    },
+    {
+      "name": "course_B",
+      "route": "routes/HL_FMA_NEW_B.json",
+      "lane": "routes/HL_FMA_NEW_B_lane.json",
+      "jitter": {
+        "s": 40.0,
+        "lateral": 0.6
+      },
+      "actors": [
+        {
+          "id": 312,
+          "kind": "static",
+          "type": "vehicle",
+          "s": 790.0,
+          "lateral": -0.9,
+          "size": [
+            4.5,
+            1.8,
+            1.5
+          ]
+        }
+      ]
+    },
+    {
+      "name": "course_D",
+      "route": "routes/HL_FMA_NEW_D.json",
+      "lane": "routes/HL_FMA_NEW_D_lane.json",
+      "jitter": {
+        "s": 40.0,
+        "lateral": 0.6
+      },
+      "actors": [
+        {
+          "id": 321,
+          "kind": "static",
+          "type": "vehicle",
+          "s": 310.0,
+          "lateral": 0.9,
+          "size": [
+            4.5,
+            1.8,
+            1.5
+          ]
+        }
+      ]
+    },
+    {
+      "name": "course_E",
+      "route": "routes/HL_FMA_NEW_E.json",
+      "lane": "routes/HL_FMA_NEW_E_lane.json",
+      "jitter": {
+        "s": 40.0,
+        "lateral": 0.6
+      },
+      "actors": [
+        {
+          "id": 332,
+          "kind": "static",
+          "type": "vehicle",
+          "s": 890.0,
+          "lateral": 0.9,
+          "size": [
+            4.5,
+            1.8,
+            1.5
+          ]
+        }
+      ]
+    },
+    {
+      "name": "course_G",
+      "route": "routes/HL_FMA_NEW_G.json",
+      "lane": "routes/HL_FMA_NEW_G_lane.json",
+      "jitter": {
+        "s": 40.0,
+        "lateral": 0.6
+      },
+      "actors": [
+        {
+          "id": 341,
+          "kind": "static",
+          "type": "vehicle",
+          "s": 570.0,
+          "lateral": -0.9,
+          "size": [
+            4.5,
+            1.8,
+            1.5
+          ]
+        }
+      ]
+    },
+    {
+      "name": "course_H",
+      "route": "routes/HL_FMA_NEW_H.json",
+      "lane": "routes/HL_FMA_NEW_H_lane.json",
+      "jitter": {
+        "s": 40.0,
+        "lateral": 0.6
+      },
+      "actors": [
+        {
+          "id": 352,
+          "kind": "static",
+          "type": "vehicle",
+          "s": 1140.0,
+          "lateral": 0.9,
+          "size": [
+            4.5,
+            1.8,
+            1.5
+          ]
+        }
+      ]
+    }
+  ]
+}
