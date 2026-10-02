@@ -108,6 +108,7 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 - [docs/reports/m4n-weight.md](docs/reports/m4n-weight.md) — 그 2% 에 무게를 줘도 **안 배운다**(없는 상태엔 무게를 못 준다)
 - [docs/reports/m4o-dagger-anchor.md](docs/reports/m4o-dagger-anchor.md) — **★ DAgger+앵커+선택: 처음으로 바늘이 움직였다**(유지 완전, 거리 +10~14%, 완주는 0)
 - [docs/reports/m4p-stage3a.md](docs/reports/m4p-stage3a.md) — **★ 쉬운 단계 ③a: 처음으로 완주율이 0 이 아니다**(M3 16.7% → M4o 30%, 라바콘은 배웠고 정지차는 못 넘는다)
+- [docs/reports/m4q-stage3b.md](docs/reports/m4q-stage3b.md) — **★ 정지차: 계수 10 앵커는 큰 변화를 막는다, 계수 3 에서 처음 넘었다**(정지차 완주 11.1%)
 
 ### 여기까지 온 곳
 **PPO 는 M3 모방 학생을 한 번도 못 넘었다 — 학습의 어느 시점에서도.** 목표 판정은 M4a 부터 지금까지
