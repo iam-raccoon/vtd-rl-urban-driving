@@ -110,6 +110,7 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 - [docs/reports/m4p-stage3a.md](docs/reports/m4p-stage3a.md) — **★ 쉬운 단계 ③a: 처음으로 완주율이 0 이 아니다**(M3 16.7% → M4o 30%, 라바콘은 배웠고 정지차는 못 넘는다)
 - [docs/reports/m4q-stage3b.md](docs/reports/m4q-stage3b.md) — **★ 정지차: 계수 10 앵커는 큰 변화를 막는다, 계수 3 에서 처음 넘었다**(정지차 완주 11.1%)
 - [docs/reports/m4r-anchor3.md](docs/reports/m4r-anchor3.md) — 계수 3 DAgger: **안 쓴 판에서 처음 정지차 통과**(22.2 / 4.2 / 0.0%, 시드 하나만)
+- [docs/reports/m4s-select-beta.md](docs/reports/m4s-select-beta.md) — **★ β 를 0.5 에서 멈추자 시드 다섯 모두 정지차 통과**(안 쓴 판 평균 37.8%, 30.6~43.1%) · 효과는 β 덕이고 선택 창은 같은 라운드를 골랐다
 
 ### 여기까지 온 곳
 **PPO 는 M3 모방 학생을 한 번도 못 넘었다 — 학습의 어느 시점에서도.** 목표 판정은 M4a 부터 지금까지
