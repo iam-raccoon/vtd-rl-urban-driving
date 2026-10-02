@@ -154,3 +154,34 @@ def load_curriculum(path: str, variants: int = 1, offset: int = 0):
         return d["name"], [load_board(e, d["signals"]) for e in d["boards"]]
     return d["name"], [load_board(e, d["signals"], variant=k)
                        for e in d["boards"] for k in range(offset, offset + variants)]
+
+
+def curriculum_has_actors(path: str) -> bool:
+    """그 커리큘럼에 액터가 한 개라도 있는가(판을 짓지 않고 JSON 만 본다)."""
+    with open(path, encoding="utf-8") as f:
+        d = json.load(f)
+    return any(e.get("actors") for e in d["boards"])
+
+
+def load_window(path: str, variants: int, offset: int):
+    """변종 창 `v{offset} ~ v{offset+variants-1}` 의 판 — `(판 목록, 변종을 걸었는가)`.
+
+    ★ **액터가 없는 커리큘럼은 변종을 접는다.** 변종은 액터만 흔든다(`world/place.py` 의
+    `jitter_specs` 는 `specs` 가 비면 그대로 돌려준다). 그래서 단계 ①② 처럼 액터가 0 개인
+    단계는 변종 N 벌이 **글자 그대로 같은 판 N 벌**이다 — 일만 N 배로 늘고 숫자는 한 자리도
+    안 바뀐다. 그때는 원본 판 한 벌과 `False` 를 돌려주고, 부르는 쪽이 접었다는 사실을 적는다.
+
+    `scripts/eval_unseen.py`(보고 창)와 `scripts/run_dagger.py --select-variants`(선택 창)가
+    **이 함수 하나**를 쓴다 — 두 창이 "어느 단계를 접는가" 를 서로 다르게 정하면 선택과
+    보고가 다른 판 묶음을 재게 된다.
+    """
+    if not curriculum_has_actors(path):
+        return load_curriculum(path)[1], False
+    return load_curriculum(path, variants=variants, offset=offset)[1], True
+
+
+def window_label(variants: int, offset: int) -> str:
+    """`v4~v7` 꼴 — 성적표가 **어느 변종으로 쟀는지** 한눈에 보이게."""
+    if variants == 1:
+        return f"v{offset}"
+    return f"v{offset}~v{offset + variants - 1}"

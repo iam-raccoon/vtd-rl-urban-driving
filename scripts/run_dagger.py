@@ -15,6 +15,20 @@
 (β=1.0, 선생님만 몬 데이터)의 학생이 단계 ① 완주율 16.7% 로 나왔다(M3 학생은 100%/98.60).
 5 라운드로는 M3 가 5 라운드에 걸쳐 배운 것을 더 어려운 판에서 다시 못 배운다.
 
+M4s — 라운드 선택을 **선택 창**(수집·보고 창과 안 겹치는 변종, 기본 `v{2V}~v{3V-1}`)으로
+하고 β 를 0.5 에서 멈춘다(`docs/superpowers/plans/2026-10-02-m4s-select-eval-beta.md`):
+
+    env -u PYTHONPATH .venv/bin/python scripts/run_dagger.py \
+        --out runs/omen/$(date +%F)-m4s-s0 --stage stage3b --variants 4 \
+        --eval-stage stage1 --eval-stage stage3a --eval-stage stage3b \
+        --init runs/omen/2026-10-01-m4o-s0/policy-best.pt --anchor-coef 3 \
+        --betas 1.0,0.5,0.5,0.5,0.5 --select best --select-variants 4 --train-seed 0
+
+창 셋 — 수집 `v0~v{V-1}`(`--variants V`) · 보고 `v{V}~v{2V-1}`(`eval_unseen.py` 기본) ·
+선택 `v{K}~v{K+N-1}`(`--select-variants N`, `--select-variant-offset K` 기본 2V). 선택 창이
+다른 둘과 겹치면 **돌기 전에**(dry-run 에서도) 거부한다. `--betas`·`--select-variants` 를 안
+주면 예전 실행과 성적표·로그가 바이트까지 같다.
+
 무엇을 모으고 무엇을 평가할지만 먼저 확인할 때(아무것도 안 돌린다):
 
     env -u PYTHONPATH .venv/bin/python scripts/run_dagger.py \
@@ -50,8 +64,10 @@ from vtd_rl.policy.evaluate import evaluate_policy, evaluate_teacher, violation_
 from vtd_rl.policy.net import DrivePolicy, PolicyConfig  # noqa: E402
 from vtd_rl.policy.train import (TrainConfig, make_reference, squash_aligned,  # noqa: E402
                                  train_epochs)
-from vtd_rl.world.board import load_board, load_curriculum, slice_board  # noqa: E402
+from vtd_rl.world.board import (curriculum_has_actors, load_board, load_curriculum,  # noqa: E402
+                                load_window, slice_board, window_label)
 
+#: 기본 β 스케줄(`--betas` 를 안 줬을 때). **목록보다 긴 라운드는 β=0.0** 이다(`beta_at`).
 BETAS = [1.0, 0.5, 0.25, 0.1, 0.0]
 H = {"name": "course_H", "route": "routes/HL_FMA_NEW_H.json", "lane": "routes/HL_FMA_NEW_H_lane.json"}
 STOPPED_SPEED = 0.02   # vec[:,0] = ego 속도/25 클립값 — 0.02 는 약 0.5 m/s 이하, "거의 정지"
@@ -98,6 +114,145 @@ SELECT_FLOOR = 0.8
 #: 머신 사이를 rsync·zip·scp 로 옮겨 다니는데 그 과정에서 심링크는 깨지거나 풀리고,
 #: 깨진 심링크는 "조용히 없는 파일" 이 된다. 300 KB 한 벌이 그보다 싸다.
 BEST_CKPT_NAME = "policy-best.pt"
+
+#: 선택 창 평가(`--select-variants`)를 라운드 기록에 넣는 열쇠. 원본 판 평가는 **단계 이름**
+#: 열쇠(`"stage3a"`)에 들어가고 이것은 그 **밖의 다른 열쇠**다 — 둘이 같은 자리에 들어가면
+#: 로그를 읽는 사람이 "원본 판 18 판" 숫자와 "선택 창 72 판" 숫자를 구별할 수 없다.
+SELECT_EVAL_KEY = "select_eval"
+
+#: 선택이 원본 판(라운드별 평가) 숫자로 이뤄졌을 때 요약의 `select_source` 값.
+ORIGINAL_SOURCE = "original"
+
+#: 평가 한 번에서 로그에 남기는 숫자(원본 판 평가와 같은 세 개).
+EVAL_KEYS = ("goal_rate", "mean_score", "mean_reward")
+
+
+def parse_betas(text) -> list:
+    """`--betas "1.0,0.5,0.5"` → `[1.0, 0.5, 0.5]`. 안 주면(None) **기본 `BETAS` 그대로**다.
+
+    값은 β(선생님이 몰 확률)라 [0, 1] 밖이면 거부한다 — 1.5 를 주면 `collect_episode` 가
+    "항상 선생님" 으로 조용히 받아들이고, 음수면 "항상 학생" 이 된다. 빈 칸(`1.0,,0.5`)도
+    거부한다(오타가 라운드 하나를 밀어 β 가 한 칸씩 어긋난다).
+    """
+    if text is None:
+        return list(BETAS)
+    parts = [p.strip() for p in str(text).split(",")]
+    if any(not p for p in parts):
+        raise ValueError(f"--betas 에 빈 칸이 있다: {text!r} — 쉼표로 구분한 숫자여야 한다")
+    try:
+        vals = [float(p) for p in parts]
+    except ValueError:
+        raise ValueError(f"--betas 를 숫자로 못 읽는다: {text!r}") from None
+    bad = [v for v in vals if not 0.0 <= v <= 1.0]     # NaN 도 여기서 떨어진다
+    if bad:
+        raise ValueError(f"--betas 값은 β(선생님이 몰 확률)라 0~1 이어야 한다: {bad}")
+    return vals
+
+
+def beta_at(betas, rnd: int) -> float:
+    """라운드 `rnd` 의 β — **목록보다 긴 라운드는 0.0** 이다(예전 `BETAS` 동작 그대로)."""
+    return betas[rnd] if rnd < len(betas) else 0.0
+
+
+def _span(lo: int, hi: int) -> str:
+    """반열린 구간 `[lo, hi)` → `v4~v7` 꼴."""
+    return window_label(hi - lo, lo)
+
+
+def variant_windows(variants: int, select_variants: int, select_offset: int) -> dict:
+    """변종 창 셋 — `{"collect": (0, V), "report": (V, 2V), "select": (K, K+N) 또는 None}`.
+
+    * 수집 `[0, V)` — 이 스크립트의 `--variants V`.
+    * 보고 `[V, 2V)` — `scripts/eval_unseen.py` 의 **기본** 창(`--seen-variants` 기본이 V,
+      `--variants` 기본이 그와 같은 수, 시작점이 V). 성적표 헤드라인이 이 창에서 나온다.
+    * 선택 `[K, K+N)` — `--select-variant-offset K`·`--select-variants N`. N=0 이면 없다.
+    """
+    sel = (select_offset, select_offset + select_variants) if select_variants > 0 else None
+    return {"collect": (0, variants), "report": (variants, 2 * variants), "select": sel}
+
+
+def check_windows(variants: int, select_variants: int, select_offset: int):
+    """선택 창이 수집 창·보고 창과 **한 변종이라도** 겹치면 `ValueError`(두 창을 이름으로 말한다).
+
+    ★ 왜 막는가. 선택이 **수집이 본 판**으로 고르면 학습 데이터에 맞춘 라운드를 고르고,
+    **보고 창**으로 고르면 고른 판으로 성적을 내는 편향(M4o 계측 규칙이 막으려던 것)이 그대로
+    성적표에 돌아온다 — 숫자만 멀쩡해 보인다. 돌고 나서 알면 늦으므로 **돌기 전에** 거부한다.
+    """
+    win = variant_windows(variants, select_variants, select_offset)
+    sel = win["select"]
+    if sel is None:
+        return
+    for name, (lo, hi) in (("수집", win["collect"]), ("보고", win["report"])):
+        if sel[0] < hi and lo < sel[1]:
+            raise ValueError(
+                f"선택 창 {_span(*sel)} 이 {name} 창 {_span(lo, hi)} 과 겹친다 — 수집 창은"
+                f" `--variants {variants}` 의 v0~, 보고 창은 `eval_unseen.py` 기본"
+                f"(--seen-variants {variants}) 이다. 셋이 서로 안 겹치게"
+                f" --select-variant-offset 을 {2 * variants} 이상으로 둬라(기본이 {2 * variants}).")
+
+
+def select_window_boards(names, select_variants: int, select_offset: int) -> list:
+    """`[(단계 이름, 판 목록, 변종을 걸었는가)]` — 선택 창 `v{K}~v{K+N-1}` 의 판.
+
+    **접기는 `world/board.py::load_window` 가 정한다** — `eval_unseen.py`(보고 창)와 같은
+    함수다. 액터가 없는 단계(①②)는 `False` 로 오고, 부르는 쪽은 그 단계를 **다시 재지 않고**
+    원본 판 평가 숫자를 쓴다(변종이 같은 판 N 벌이라 다시 재도 숫자가 같고 일만 늘어난다).
+    """
+    return [(name, *load_window(stage_path(name), select_variants, select_offset))
+            for name in names]
+
+
+def select_window_eval(net, row: dict, triples, seeds, select_variants: int,
+                       select_offset: int) -> dict:
+    """한 라운드의 **선택 창 평가** — 로그 행의 `SELECT_EVAL_KEY` 자리에 들어간다.
+
+    액터 있는 단계는 선택 창 판으로 **새로** 잰다. 접힌 단계(액터 0)는 그 라운드의 원본 판
+    숫자(`row[단계]`)를 그대로 옮기고 `folded: true` 를 단다 — "선택이 그 단계를 무엇으로
+    봤는가" 가 이 열쇠 하나에 다 들어 있게.
+    """
+    window = window_label(select_variants, select_offset)
+    stages, t0 = {}, time.perf_counter()
+    for stage, boards, varied in triples:
+        if varied:
+            ev = evaluate_policy(net, boards, seeds=seeds)
+            stages[stage] = {**{k: ev[k] for k in EVAL_KEYS}, "folded": False,
+                             "window": window, "boards": len(boards),
+                             "episodes": len(ev["episodes"])}
+        else:
+            stages[stage] = {**{k: row[stage][k] for k in EVAL_KEYS}, "folded": True,
+                             "window": ORIGINAL_SOURCE, "boards": len(boards)}
+    # `seconds` 는 선택 창 평가에 든 시간이다 — 판이 N 배라 비싸므로 실행 크기를 잴 때 쓴다.
+    return {"window": window, "variants": select_variants, "offset": select_offset,
+            "eval_seeds": len(seeds), "stages": stages, "seconds": time.perf_counter() - t0}
+
+
+def selection_rows(rounds, eval_names, use_window: bool) -> list:
+    """`pick_round`·`select_note` 에 먹일 행.
+
+    선택 창을 안 쓰면 **`rounds` 그 자체**(같은 객체)를 돌려준다 — 기본 실행의 선택이 예전과
+    비트 단위로 같다. 쓰면 각 라운드의 선택 창 숫자로 단계 열쇠를 채운 **새 행**이다(`round`·
+    `beta` 는 그대로). 선택 알고리즘은 `pick_round` 하나뿐이고, 여기서는 먹이만 바꾼다.
+    """
+    if not use_window:
+        return rounds
+    out = []
+    for r in rounds:
+        sel = r.get(SELECT_EVAL_KEY)
+        if not sel:
+            raise ValueError(f"라운드 {r['round']} 에 선택 창 평가(`{SELECT_EVAL_KEY}`)가 없다")
+        out.append({"round": r["round"], "beta": r["beta"],
+                    **{s: sel["stages"][s] for s in eval_names}})
+    return out
+
+
+def row_for(rounds, sel_rows, picked) -> dict:
+    """`pick_round(sel_rows)` 가 돌려준 행 → `rounds` 의 **같은 자리** 행(원본 판 숫자·체크포인트).
+
+    라운드 번호가 아니라 **자리**로 찾는다 — `--resume` 로그에는 같은 라운드 번호가 두 번
+    나올 수 있다.
+    """
+    idx = next(i for i, s in enumerate(sel_rows) if s is picked)
+    return rounds[idx]
 
 
 def stage_label(name: str) -> str:
@@ -246,9 +401,7 @@ def select_note(select, metric, floor, rounds, eval_names) -> str:
 
 def has_actors(stage_name: str) -> bool:
     """그 단계 커리큘럼에 액터가 한 개라도 있는가(판을 짓지 않고 JSON 만 본다)."""
-    with open(stage_path(stage_name), encoding="utf-8") as f:
-        d = json.load(f)
-    return any(e.get("actors") for e in d["boards"])
+    return curriculum_has_actors(stage_path(stage_name))
 
 
 def check_smoke(stages, smoke: bool):
@@ -324,7 +477,8 @@ def eval_boards(names, smoke):
 
     ★ 평가는 **변종을 안 쓴다**(`variants=1`). 성적표의 "단계 ③ 완주율" 은 출발점
     0/18(판 6 개 × 시드 3 개)과 비교하는 숫자라, 판 수가 변종에 따라 달라지면 비교가
-    깨진다. 변종은 **수집에만** 건다.
+    깨진다. 변종은 **수집에만** 건다(선택 창 `--select-variants` 는 이것과 **따로** 재서
+    다른 열쇠에 넣는다 — `select_window_eval`).
     """
     return [(n, _boards(stage_path(n), smoke)) for n in names]
 
@@ -476,6 +630,40 @@ def _history_lines(history_paths, history_notes, stages=None) -> list:
     return lines
 
 
+def _select_source_note(chosen: dict, eval_names) -> str:
+    """채택 줄에 붙는 "어느 평가로 골랐나" — 선택 창 이름, 새로 잰 단계와 접은 단계."""
+    sel = chosen[SELECT_EVAL_KEY]
+    varied = [s for s in eval_names if not sel["stages"][s]["folded"]]
+    folded = [s for s in eval_names if sel["stages"][s]["folded"]]
+    return (f"고른 평가: **선택 창 `{sel['window']}`**"
+            f"({'·'.join(stage_label(s) for s in varied)} 를 선택 창 판으로 평가 시드"
+            f" {sel['eval_seeds']}개"
+            + (f"; {'·'.join(stage_label(s) for s in folded)} 는 액터 0 이라 원본 판 숫자"
+               if folded else "") + ")")
+
+
+def _select_eval_lines(rounds, eval_names) -> list:
+    """'선택 창 평가' 절 — 라운드 선택이 **실제로 본** 숫자. 원본 판 표와 따로 둔다."""
+    sel0 = rounds[0][SELECT_EVAL_KEY]
+    varied = [s for s in eval_names if not sel0["stages"][s]["folded"]]
+    boards = {s: sel0["stages"][s]["boards"] for s in varied}
+    lines = ["", f"### 선택 창 평가(라운드별) — 라운드 선택이 쓴 숫자, 창 `{sel0['window']}`", "",
+             "- " + " · ".join(f"{stage_label(s)} 판 {n}개 × 평가 시드 {sel0['eval_seeds']}개"
+                              for s, n in boards.items())
+             + " · '(원본)' 칸은 액터 0 이라 원본 판 숫자를 그대로 쓴 단계다.", "",
+             "| 라운드 | β | "
+             + " | ".join(f"{stage_label(s)} 완주율 | {stage_label(s)} 점수" for s in eval_names)
+             + " | 평가 시간 |",
+             "|---:|---:|" + "---:|---:|" * len(eval_names) + "---:|"]
+    for r in rounds:
+        st = r[SELECT_EVAL_KEY]["stages"]
+        cells = "".join(f" {st[s]['goal_rate'] * 100:.1f}%{'(원본)' if st[s]['folded'] else ''} |"
+                        f" {st[s]['mean_score']:.1f} |" for s in eval_names)
+        lines.append(f"| {r['round']} | {r['beta']} |" + cells
+                     + f" {r[SELECT_EVAL_KEY].get('seconds', 0.0):.0f}초 |")
+    return lines
+
+
 def _dry_run_lines(collect_names, eval_names, smoke, variants, seeds, rounds):
     """무엇을 모으고 무엇을 평가할지, 액터가 실제로 어디에 놓였는지만 찍는다.
 
@@ -521,6 +709,34 @@ def _preflight_lines(a, sel_metric) -> list:
             + ("  ← 예전 그대로(rnd)" if a.train_seed == 0 else "")]
 
 
+def _beta_line(betas, rounds: int, given: bool) -> str:
+    """라운드마다 **실제로 쓸** β — 목록 끝을 넘은 라운드(0.0)를 눈에 띄게 적는다."""
+    cells = [f"r{r}={beta_at(betas, r):g}" + ("(목록 끝 → 0)" if r >= len(betas) else "")
+             for r in range(rounds)]
+    return (f"β 스케줄({'--betas' if given else '기본'}): " + " · ".join(cells))
+
+
+def _window_lines(a, eval_names) -> list:
+    """변종 창 셋(수집·보고·선택)과, 선택 창이 단계마다 무엇을 재는지 — 띄우기 전에 본다."""
+    win = variant_windows(a.variants, a.select_variants, a.select_variant_offset)
+    out = [f"변종 창 — 수집 {_span(*win['collect'])}(--variants {a.variants}) · 보고"
+           f" {_span(*win['report'])}(eval_unseen 기본 --seen-variants {a.variants}) · 선택 "
+           + (f"{_span(*win['select'])}(--select-variants {a.select_variants})" if win["select"]
+              else "없음 — 원본 판 라운드 평가로 고른다(--select-variants 0, 예전 그대로)")]
+    if not win["select"]:
+        return out
+    for stage, boards, varied in select_window_boards(eval_names, a.select_variants,
+                                                      a.select_variant_offset):
+        if varied:
+            out.append(f"  선택 평가 {stage}: 선택 창 판 {len(boards)}개 × 평가 시드"
+                       f" {a.select_eval_seeds}개 = {len(boards) * a.select_eval_seeds} 판/라운드"
+                       f" · 예: {', '.join(b.name for b in boards[:3])}")
+        else:
+            out.append(f"  선택 평가 {stage}: 액터 0 — 변종이 같은 판이라 원본 판 숫자로 접는다"
+                       "(다시 안 잰다)")
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", help="산출물 폴더(--dry-run 이 아니면 필수)")
@@ -540,8 +756,9 @@ def main():
     ap.add_argument("--eval-stage", action="append", default=[],
                     help=f"**평가** 커리큘럼 이름(반복 가능, 기본 {' '.join(DEFAULT_EVAL_STAGES)})")
     ap.add_argument("--variants", type=int, default=1,
-                    help="판 변종 수 — 수집에만 건다(평가는 늘 원본 판). 액터가 판마다 다르게"
-                        " 놓인 판 N 벌이 생긴다(world/place.py 의 jitter)")
+                    help="판 변종 수 — 수집에만 건다(라운드별 평가는 늘 원본 판, 선택 창은"
+                        " --select-variants). 액터가 판마다 다르게 놓인 판 N 벌이 생긴다"
+                        "(world/place.py 의 jitter)")
     ap.add_argument("--dry-run", action="store_true",
                     help="아무것도 안 돌리고 수집·평가 단계와 액터 배치만 찍고 끝낸다")
     ap.add_argument("--rounds", type=int, default=5)
@@ -594,6 +811,21 @@ def main():
     ap.add_argument("--near-weight", type=float, default=1.0,
                     help="그 표본의 손실 배율(기본 1.0 = 가중 없음 경로). M4n 결론은 '기각'"
                          " 이므로 기본 실행에서는 켜지 않는다")
+    ap.add_argument("--betas", default=None,
+                    help="β 스케줄(쉼표 구분, 라운드 순서, 각 값 0~1). 안 주면 기본"
+                         f" {','.join(f'{b:g}' for b in BETAS)} 그대로다. 목록보다 긴 라운드는"
+                         " β=0.0 이다(기본 스케줄과 같은 규칙). M4r: β 0.1·0 라운드가 실패"
+                         " 주행으로 데이터를 채워 장애물 성적이 다시 0 으로 내려갔다")
+    ap.add_argument("--select-variants", type=int, default=0,
+                    help="라운드 선택용 변종 수 N(기본 0 = 예전 그대로 원본 판 라운드 평가로"
+                         " 고른다). N>0 이면 라운드마다 **액터가 있는** 평가 단계를 변종 창"
+                         " v{K}~v{K+N-1} 로 **추가로** 평가하고 선택을 그 숫자로 한다(액터 없는"
+                         " 단계는 원본 판 숫자). --select best 에서만 쓴다")
+    ap.add_argument("--select-variant-offset", type=int, default=None,
+                    help="선택 창의 시작 변종 K(기본 2×--variants). 수집 창 [0,V)·보고 창"
+                         " [V,2V)(eval_unseen 기본)과 겹치면 돌기 전에 거부한다")
+    ap.add_argument("--select-eval-seeds", type=int, default=None,
+                    help="선택 창 평가의 평가 시드 수(기본 --eval-seeds). 판이 N 배라 비싸다")
     a = ap.parse_args()
     if a.smoke:
         a.rounds, a.seeds, a.epochs, a.eval_seeds, a.workers = 1, 1, 2, 1, 1
@@ -618,6 +850,34 @@ def main():
     #   `--dry-run` 한 번이라, 이 검사가 그 뒤에 있으면 경로 오타를 preflight 가 놓친다.
     if a.init and not os.path.exists(a.init):
         ap.error(f"--init 체크포인트가 없다: {a.init}")
+    # β 스케줄과 선택 창도 **dry-run 보다 앞**에서 검사한다 — preflight 가 걸러야 한다.
+    try:
+        betas = parse_betas(a.betas)
+    except ValueError as exc:
+        ap.error(str(exc))
+    if a.select_variants < 0:
+        ap.error("--select-variants 는 0 이상이어야 한다(0 = 원본 판으로 고른다)")
+    if not a.select_variants and (a.select_variant_offset is not None
+                                  or a.select_eval_seeds is not None):
+        # 손잡이만 돌리고 선택 창을 안 켠 꼴 — 켰다고 믿고 몇 시간 돌리면 안 된다(M4e).
+        ap.error("--select-variant-offset·--select-eval-seeds 는 --select-variants N(>0) 과"
+                 " 같이 써야 한다 — 지금은 선택 창이 꺼져 있어 아무 일도 안 한다")
+    if a.select_variant_offset is None:
+        # ★ 기본이 0 도 V 도 아니다 — 0 이면 수집 창, V 면 보고 창과 겹친다.
+        a.select_variant_offset = 2 * a.variants
+    if a.select_eval_seeds is None:
+        a.select_eval_seeds = a.eval_seeds
+    if a.select_variant_offset < 0:
+        ap.error("--select-variant-offset 은 0 이상이어야 한다")
+    if a.select_eval_seeds < 1:
+        ap.error("--select-eval-seeds 는 1 이상이어야 한다")
+    if a.select_variants and a.select == "last":
+        ap.error("--select-variants 는 라운드를 고를 때(--select best)만 쓴다 — --select last 면"
+                 " 마지막 라운드가 그대로 나가고 선택 창 평가는 버려진다")
+    try:
+        check_windows(a.variants, a.select_variants, a.select_variant_offset)
+    except ValueError as exc:
+        ap.error(str(exc))
 
     # 앞이 수집, 뒤가 평가다 — 뒤바꾸면 단계 ③ 을 모으라고 시켜 놓고 ①② 만 모은다.
     collect_names, eval_names = resolve_stages(a.stage, a.eval_stage)
@@ -630,12 +890,20 @@ def main():
             stage_path(_n)          # 평가 단계 이름도 여기서 검사한다
     except ValueError as exc:
         ap.error(str(exc))
+    if a.select_variants and not any(has_actors(s) for s in eval_names):
+        # 전부 접히면 선택 창 숫자가 원본 판 숫자와 글자 그대로 같다 — 켠 것이 아무 일도 안 한다.
+        ap.error(f"--select-variants 를 줬는데 평가 단계({', '.join(eval_names)})에 액터가 있는"
+                 " 단계가 없다 — 액터 없는 단계는 원본 판으로 접혀 선택이 하나도 안 바뀐다")
 
     sel_metric = a.select_metric or DEFAULT_SELECT_METRIC[a.select]
+    use_window = a.select_variants > 0
+    select_seeds = tuple(range(a.select_eval_seeds))
     if a.dry_run:
         print("\n".join(_dry_run_lines(collect_names, eval_names, a.smoke, a.variants,
                                        a.seeds, a.rounds)
-                        + _preflight_lines(a, sel_metric)))
+                        + _preflight_lines(a, sel_metric)
+                        + [_beta_line(betas, a.rounds, a.betas is not None)]
+                        + _window_lines(a, eval_names)))
         return 0
     if not a.out:
         ap.error("--out 이 필요하다")
@@ -653,6 +921,19 @@ def main():
             rounds = [json.loads(line) for line in f if line.strip()]
         if not rounds:
             ap.error(f"{log_path} 에 라운드가 없다")
+        # ★ 같은 로그에서 **다른 라운드**가 나가면 안 된다 — 선택 창으로 고른 실행을 그 인자
+        #   없이 다시 만들면 원본 판으로 다시 골라 `policy-best.pt` 를 다른 라운드로 덮어쓴다.
+        logged = [r.get(SELECT_EVAL_KEY) for r in rounds]
+        want = window_label(a.select_variants, a.select_variant_offset) if use_window else None
+        if use_window and any(s is None or s.get("window") != want for s in logged):
+            got = sorted({s.get("window") if s else "(없음)" for s in logged})
+            ap.error(f"--select-variants 로 선택 창 {want} 를 달라고 했는데 로그의 선택 창 평가는"
+                     f" {', '.join(got)} 이다 — 로그에 있는 창과 같은 인자로 다시 만들어라")
+        if not use_window and any(s is not None for s in logged):
+            got = sorted({s.get("window") for s in logged if s})
+            ap.error(f"로그는 선택 창 {', '.join(got)} 평가를 들고 있다 — 그 실행은 그 숫자로"
+                     " 골랐으므로 --select-variants·--select-variant-offset 을 같은 값으로 줘라"
+                     "(안 주면 원본 판으로 다시 골라 다른 라운드가 나갈 수 있다)")
     else:
         if not a.resume:
             existing_shards = glob.glob(os.path.join(data_dir, "*.npz"))
@@ -671,7 +952,7 @@ def main():
         ref = make_reference(round_start_net(a.init, a.smoke, dev)) if a.anchor_coef > 0.0 else None
 
         for rnd in range(a.rounds):
-            beta = BETAS[rnd] if rnd < len(BETAS) else 0.0
+            beta = beta_at(betas, rnd)
             policy_path = os.path.join(a.out, f"policy-r{rnd-1}.pt") if rnd else None
             targets = collect_targets(collect_paths, a.smoke, a.variants)
             names = [name for _p, name in targets]
@@ -728,6 +1009,14 @@ def main():
             if missing:
                 # 열쇠가 빠지면 성적표 칸이 조용히 대시가 된다 — 평가를 안 한 것과 구별이 안 된다.
                 raise AssertionError(f"평가 결과에 단계가 빠졌다: {missing}")
+            if use_window:
+                # 원본 판 평가는 위의 단계 열쇠 그대로 두고, 선택 창 평가는 **다른 열쇠**에 넣는다.
+                # 기본(N=0)이면 이 열쇠 자체가 없다 — 로그 한 줄이 예전과 바이트까지 같다.
+                triples = select_window_boards(eval_names, a.select_variants,
+                                               a.select_variant_offset)
+                row[SELECT_EVAL_KEY] = select_window_eval(net_r, row, triples, select_seeds,
+                                                          a.select_variants,
+                                                          a.select_variant_offset)
             rounds.append(row)
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -737,8 +1026,16 @@ def main():
     # 예전에는 `best` 를 아래 성적표 자리에서 **계산만** 하고 여기서는 `rounds[-1]` 을 읽었다 —
     # M4k 실측으로 r3(단계 ① 83.3%)를 만들어 놓고 r4(16.7%)를 내보냈다. 고른 라운드와
     # 내보내는 라운드가 갈라질 길을 아예 없앤다.
-    chosen = pick_round(rounds, a.select, sel_metric, eval_names, a.select_floor)
-    sel_note = select_note(a.select, sel_metric, a.select_floor, rounds, eval_names)
+    #
+    # ★★ 선택 창(`--select-variants`)을 켜면 `pick_round` 에 **선택 창 숫자**를 먹인다 —
+    # 선택 알고리즘은 그대로 하나이고 먹이만 바뀐다. 돌려받은 행은 `row_for` 로 같은 자리의
+    # **원본 행**으로 되돌린다(체크포인트·원본 판 숫자·목표 판정은 그 행에서 읽는다).
+    # 꺼져 있으면 `sel_rows is rounds` 라 예전과 비트 단위로 같다.
+    sel_rows = selection_rows(rounds, eval_names, use_window)
+    chosen = row_for(rounds, sel_rows,
+                     pick_round(sel_rows, a.select, sel_metric, eval_names, a.select_floor))
+    sel_note = select_note(a.select, sel_metric, a.select_floor, sel_rows, eval_names)
+    select_source = rounds[0][SELECT_EVAL_KEY]["window"] if use_window else ORIGINAL_SOURCE
     chosen_ckpt = os.path.join(a.out, f"policy-r{chosen['round']}.pt")
     # 체크포인트를 다시 읽어(학습 도중의 net 객체에 기대지 않고) 상세 평가를 낸다 —
     # --report-only 에서도 그대로 쓸 수 있고, 정상 실행에서도 저장한 체크포인트가 로그의 숫자와
@@ -809,6 +1106,20 @@ def main():
                      " 데이터·같은 설정이라도 **배치 순서만 바꾸면** 단계 ① 완주율이 16.7% ↔"
                      " 66.7% 로 흔들린다. 이 성적표는 **시드 하나**의 결과이지 그 설정의"
                      " 결과가 아니다.")
+    # `--betas` 를 안 줬으면 줄 자체를 안 넣는다(기본 스케줄은 표의 β 칸이 이미 말한다).
+    # 적는 값은 인자가 아니라 **로그의 β**(실제로 쓴 값)다 — `--report-only` 에서도 맞다.
+    if a.betas is not None:
+        lines.append(f"- β 스케줄(`--betas {a.betas}`): 라운드별 실제 β "
+                     + " · ".join(f"r{r['round']}={r['beta']:g}" for r in rounds)
+                     + f" — 기본({','.join(f'{b:g}' for b in BETAS)})과 다르다. 목록보다 긴"
+                     " 라운드는 β=0 이다.")
+    # 선택 창을 켰을 때만 붙는 줄 — 아래 첫 표(원본 판)와 선택이 쓴 숫자를 헷갈리지 않게.
+    if use_window:
+        lines.append(f"- 라운드 선택은 **선택 창 `{select_source}`** 평가로 했다 — 아래 첫 표의"
+                     " 완주율은 **원본 판** 라운드 평가이고, 선택이 쓴 숫자는 그 아래"
+                     " '선택 창 평가' 표다. 선택 창은 수집 창"
+                     f" `{_span(0, a.variants)}`·보고 창 `{_span(a.variants, 2 * a.variants)}`"
+                     "(`eval_unseen.py` 기본)과 겹치지 않는다.")
     lines += [
         zero_shot_line, "",
         "| 라운드 | β | 수집 판(완주) | 누적 표본 | 손실 | 정지-출발 표본¹ | "
@@ -840,13 +1151,16 @@ def main():
                 f" {'—' if kl is None else format(kl, '.3f')} | {r.get('near_m', '—')} |"
                 f" {r.get('near_weight', '—')} |"
                 f" {'—' if frac is None else format(frac * 100, '.1f') + '%'} |")
+    if use_window:
+        lines += _select_eval_lines(rounds, eval_names)
 
     # 가장 좋았던 라운드. **`--select last`(기본)이면 기준이 `primary` 라 예전 식과 글자
     # 하나까지 같다** — 커밋된 M3 성적표가 이 줄을 들고 있다(`가장 좋았던 라운드: 4`).
     # `--select best` 면 이 줄이 곧 채택된 라운드이고, 바로 아래 줄이 기준을 밝힌다.
     # 동률 처리는 기준마다 다르다 — `pick_round` 안의 규칙이다(`primary` 는 더 뒤 라운드).
     last = rounds[-1]          # 아래 '정지-출발' 비교는 **마지막 라운드**를 말한다(채택과 별개)
-    best = pick_round(rounds, "best", sel_metric, eval_names, a.select_floor)
+    best = row_for(rounds, sel_rows,
+                   pick_round(sel_rows, "best", sel_metric, eval_names, a.select_floor))
     best_ok = (best[primary]["goal_rate"] >= 0.9
               and best[primary]["mean_score"] >= teacher1["mean_score"] - 10.0)
     best_ckpt = os.path.join(a.out, f"policy-r{best['round']}.pt")
@@ -858,7 +1172,9 @@ def main():
     if a.select != "last":
         lines += [f"- **채택: 라운드 {chosen['round']}** (`--select {a.select}`) — 기준 {sel_note}"
                   f" · 이 성적표의 완주율·위반표·요약은 전부 **이 라운드**의 것이다"
-                  f" · 체크포인트 `{best_path}`(= `{chosen_ckpt}` 복사본)"]
+                  f" · 체크포인트 `{best_path}`(= `{chosen_ckpt}` 복사본)"
+                  # 선택 창이 꺼져 있으면(기본) 문구가 예전과 한 글자도 안 달라진다.
+                  + (f" · {_select_source_note(chosen, eval_names)}" if use_window else "")]
     # 라운드가 하나뿐이면(스모크) "베스트 대 마지막" 비교가 자기 자신과의 비교라 공허하니 건너뛴다.
     # stall_start 필드가 없는 옛 로그(--report-only)도 조용히 건너뛴다.
     if len(rounds) > 1 and last.get("stall_start") is not None:
@@ -906,7 +1222,14 @@ def main():
                "selected_round": chosen["round"], "best_ckpt": best_path,
                # 개입이 켜졌는지는 요약만 봐도 알아야 한다(라운드별 실측은 log.jsonl 에 있다).
                "anchor_coef": a.anchor_coef, "near_m": a.near_m, "near_weight": a.near_weight,
-               "train_seed": a.train_seed}
+               "train_seed": a.train_seed,
+               # ★ 선택이 **어느 평가로** 이뤄졌는가 — `"original"`(원본 판 라운드 평가) 또는
+               #   선택 창 이름(`"v8~v11"`). 아래 단계별 숫자는 어느 쪽이든 **원본 판** 숫자다.
+               "select_source": select_source}
+    if use_window:
+        summary[SELECT_EVAL_KEY] = chosen[SELECT_EVAL_KEY]
+    if a.betas is not None:
+        summary["betas"] = [r["beta"] for r in rounds]
     for stage in eval_names:
         summary[stage] = chosen[stage]
     print(json.dumps(summary, ensure_ascii=False))

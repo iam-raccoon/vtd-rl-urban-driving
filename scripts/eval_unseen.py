@@ -37,7 +37,8 @@ from vtd_rl import rule_stack as rs  # noqa: E402
 from vtd_rl.policy import device as pick_device  # noqa: E402
 from vtd_rl.policy.evaluate import evaluate_policy  # noqa: E402
 from vtd_rl.policy.net import DrivePolicy  # noqa: E402
-from vtd_rl.world.board import load_curriculum  # noqa: E402
+from vtd_rl.world.board import curriculum_has_actors, load_window  # noqa: E402
+from vtd_rl.world.board import window_label as _window_label  # noqa: E402
 
 #: 기본 평가 단계 — ① 유지, ② 유지, ③ 학습. 순서가 성적표 표의 순서다.
 DEFAULT_STAGES = ["stage1", "stage2", "stage3"]
@@ -75,9 +76,7 @@ def stage_path(name: str) -> str:
 
 def has_actors(path: str) -> bool:
     """그 커리큘럼에 액터가 한 개라도 있는가(판을 짓지 않고 JSON 만 본다)."""
-    with open(path, encoding="utf-8") as f:
-        d = json.load(f)
-    return any(e.get("actors") for e in d["boards"])
+    return curriculum_has_actors(path)
 
 
 def stage_boards(name: str, variants: int, offset: int):
@@ -89,18 +88,16 @@ def stage_boards(name: str, variants: int, offset: int):
     안 바뀐다. 접고, 접었다는 사실을 표와 요약에 남긴다.
 
     단계 ③ 은 액터가 있으므로 접지 않는다 — 이 도구의 존재 이유가 거기다.
+
+    접는 규칙은 `world/board.py::load_window` 하나에 있다 — `run_dagger.py --select-variants`
+    (선택 창)도 같은 함수를 쓴다.
     """
-    path = stage_path(name)
-    if not has_actors(path):
-        return load_curriculum(path)[1], False
-    return load_curriculum(path, variants=variants, offset=offset)[1], True
+    return load_window(stage_path(name), variants, offset)
 
 
 def window_label(variants: int, offset: int) -> str:
-    """`v4~v7` 꼴 — 성적표가 **어느 변종으로 쟀는지** 한눈에 보이게."""
-    if variants == 1:
-        return f"v{offset}"
-    return f"v{offset}~v{offset + variants - 1}"
+    """`v4~v7` 꼴 — 성적표가 **어느 변종으로 쟀는지** 한눈에 보이게(`world/board.py` 와 같은 것)."""
+    return _window_label(variants, offset)
 
 
 def evaluate_stage(net, boards, eval_seeds: int) -> dict:
