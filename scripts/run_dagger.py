@@ -76,7 +76,8 @@ SELECT_CHOICES = ("last", "best")
 #: 선택 기준(`--select-metric`).
 #:  * `primary`            — **예전 기준**. 첫 평가 단계(`primary`)의 완주율만 본다.
 #:  * `retain-then-learn`  — 첫 평가 단계(**유지**)가 `--select-floor` 이상인 라운드 중에서
-#:                           마지막 평가 단계(**학습**) 완주율이 가장 높은 라운드.
+#:                           마지막 평가 단계(**학습**) 완주율이 가장 높은 라운드. 동점이면
+#:                           중간 평가 단계 평균 → 유지 → 더 뒤 라운드(`pick_round`).
 SELECT_METRICS = ("primary", "retain-then-learn")
 
 #: `--select-metric` 을 안 줬을 때 `--select` 가 정하는 기본 기준. 둘을 묶어 두는 이유:
@@ -155,6 +156,22 @@ def select_stages(eval_names):
     return names[0], names[-1]
 
 
+def middle_stages(eval_names) -> list:
+    """첫(유지)·마지막(학습) 평가 단계 **사이**의 단계들 — 평가 단계가 둘 이하면 빈 목록이다.
+
+    단계 ①·③a·③b 를 주면 `["stage3a"]` 다. 첫 단계와 마지막 단계는 **절대 안 들어간다** —
+    둘은 이미 기준에 제자리가 있다(학습 = 첫 열쇠, 유지 = 세 번째 열쇠).
+    """
+    return list(eval_names or [])[1:-1]
+
+
+def middle_mean(row, middle) -> float:
+    """중간 단계들의 완주율 평균. 중간 단계가 없으면 0 — 모든 라운드가 같은 값이라 동점을 안 가른다."""
+    if not middle:
+        return 0.0
+    return sum(row[s]["goal_rate"] for s in middle) / len(middle)
+
+
 def gated_rounds(rounds, retain: str, floor: float) -> list:
     """유지 단계 완주율이 문턱 이상인 라운드들(없으면 빈 목록)."""
     return [r for r in rounds if r[retain]["goal_rate"] >= floor]
@@ -172,8 +189,16 @@ def pick_round(rounds, select, metric=None, eval_names=None, floor: float = SELE
     전부 부서진 판에서 "단계 ③ 가 제일 높은 폐허" 를 뽑으면 완주율 0% 짜리 그물을 성적표
     대표로 내보내게 된다. 되돌렸다는 사실은 `select_note` 가 문장으로 말한다.
 
-    동점이면 **더 뒤 라운드**다 — DAgger 는 라운드가 갈수록 데이터가 쌓이므로 같은 성적이면
-    뒤가 낫고, 예전 `:594` 의 동률 규칙도 그것이었다(옛 성적표가 그 규칙으로 나왔다).
+    문턱을 넘은 라운드끼리의 순서: (1) 학습 단계 최대 → (2) **중간 단계 평균 최대** →
+    (3) 유지 단계 최대 → (4) 더 뒤 라운드. DAgger 는 라운드가 갈수록 데이터가 쌓이므로
+    같은 성적이면 뒤가 낫고, 예전 `:594` 의 동률 규칙도 그것이었다(옛 성적표가 그 규칙으로 나왔다).
+
+    ★ (2) 가 왜 있나. 학습 단계가 전 라운드 0% 로 평평하고(아직 못 배웠다) 유지도 전부
+    100% 면 동점이 곧장 "더 뒤 라운드" 로 떨어져 **중간 단계(이차 기술)를 전혀 안 본다.**
+    M4q 시드 0(단계 ③a r1 39% 를 두고 17% 인 r4)·M4r 시드 1(r2 50% 를 두고 6% 인 r4)에서
+    실제로 그렇게 뽑혔다. 중간 단계는 학습 단계 **다음**이다 — 학습 단계가 더 높은 라운드를
+    중간 단계가 뒤집는 일은 없다. 평가 단계가 둘이면 중간 단계가 없어 예전과 같다.
+    문턱을 하나도 못 넘은 경우의 되돌림(유지 최대)은 예전 그대로 두었다.
     """
     if not rounds:
         raise ValueError("라운드가 없다 — 고를 것이 없다")
@@ -189,8 +214,9 @@ def pick_round(rounds, select, metric=None, eval_names=None, floor: float = SELE
         return max(rounds, key=lambda r: (r[retain]["goal_rate"], r["round"]))
     pool = gated_rounds(rounds, retain, floor)
     if pool:
-        return max(pool, key=lambda r: (r[learn]["goal_rate"], r[retain]["goal_rate"],
-                                        r["round"]))
+        middle = middle_stages(eval_names)
+        return max(pool, key=lambda r: (r[learn]["goal_rate"], middle_mean(r, middle),
+                                        r[retain]["goal_rate"], r["round"]))
     return max(rounds, key=lambda r: (r[retain]["goal_rate"], r[learn]["goal_rate"], r["round"]))
 
 
@@ -208,9 +234,14 @@ def select_note(select, metric, floor, rounds, eval_names) -> str:
     if not passed:
         return (f"`retain-then-learn`: {stage_label(retain)} 완주율 ≥ {floor * 100:.1f}% 인"
                 f" 라운드가 **하나도 없어** {stage_label(retain)} 완주율 최대로 되돌렸다")
+    # 중간 단계가 있을 때만 동점 처리에 한 칸을 더 적는다 — 평가 단계가 둘이면 문구가
+    # 예전과 한 글자도 안 달라진다(선택도 안 달라진다).
+    middle = middle_stages(eval_names)
+    mid = (f"{'·'.join(stage_label(s) for s in middle)} 완주율"
+           f"{' 평균' if len(middle) > 1 else ''}, 그다음 " if middle else "")
     return (f"`retain-then-learn`: {stage_label(retain)} 완주율 ≥ {floor * 100:.1f}% 인 라운드"
             f" {passed}/{len(rounds)} 개 중 {stage_label(learn)} 완주율 최대"
-            f"(동점이면 {stage_label(retain)}, 그다음 더 뒤 라운드)")
+            f"(동점이면 {mid}{stage_label(retain)}, 그다음 더 뒤 라운드)")
 
 
 def has_actors(stage_name: str) -> bool:
@@ -547,7 +578,8 @@ def main():
     ap.add_argument("--select-metric", choices=SELECT_METRICS, default=None,
                     help=f"선택 기준(안 주면 --select 를 따라간다: {DEFAULT_SELECT_METRIC})."
                          " primary 는 첫 평가 단계 완주율만 보고, retain-then-learn 은 첫 단계가"
-                         " --select-floor 이상인 라운드 중 마지막 평가 단계 완주율을 최대화한다")
+                         " --select-floor 이상인 라운드 중 마지막 평가 단계 완주율을 최대화한다(동점이면"
+                         " 중간 평가 단계 평균, 그다음 첫 단계, 그다음 더 뒤 라운드)")
     ap.add_argument("--select-floor", type=float, default=SELECT_FLOOR,
                     help=f"retain-then-learn 의 유지 문턱(기본 {SELECT_FLOOR}). 단계 ① 은 독립"
                          " 판이 6 개라 해상도가 16.7 점이고 '한 판만 잃음' 이 83.3%% 다")
@@ -812,7 +844,7 @@ def main():
     # 가장 좋았던 라운드. **`--select last`(기본)이면 기준이 `primary` 라 예전 식과 글자
     # 하나까지 같다** — 커밋된 M3 성적표가 이 줄을 들고 있다(`가장 좋았던 라운드: 4`).
     # `--select best` 면 이 줄이 곧 채택된 라운드이고, 바로 아래 줄이 기준을 밝힌다.
-    # 동률이면 더 뒤 라운드(round 값이 더 큰 쪽)를 고른다 — `pick_round` 안의 규칙이다.
+    # 동률 처리는 기준마다 다르다 — `pick_round` 안의 규칙이다(`primary` 는 더 뒤 라운드).
     last = rounds[-1]          # 아래 '정지-출발' 비교는 **마지막 라운드**를 말한다(채택과 별개)
     best = pick_round(rounds, "best", sel_metric, eval_names, a.select_floor)
     best_ok = (best[primary]["goal_rate"] >= 0.9

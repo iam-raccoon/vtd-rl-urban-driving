@@ -364,3 +364,182 @@ def test_저장한_체크포인트들이_서로_다르다(rd, harness, tmp_path,
     assert len(blobs) == 5, "라운드별 체크포인트가 구별되지 않는다 — 바이트 비교가 공허하다"
     assert torch.load(str(out / "policy-r0.pt"), map_location="cpu",
                       weights_only=False)["state"] is not None
+
+
+# ------------------------------- ★ 중간 단계 동점 처리 — 학습 단계가 0 에서 평평할 때
+
+#: 단계 ③a·③b 는 수집 변종 18 판이라 완주율이 k/18 이다.
+#: M4q 시드 0 실측(`runs/omen/2026-10-02-m4q-s0/log.jsonl`): 정지차(③b) 전 라운드 0%,
+#: 단계 ① 전 라운드 100% → 예전 규칙은 r4(라바콘 3/18 = 17%)를 뽑았다. r1 은 7/18 = 39%.
+M4Q_S0 = {"stage1": [1.0] * 5,
+          "stage3a": [0.0, 7 / 18, 6 / 18, 6 / 18, 3 / 18],
+          "stage3b": [0.0] * 5}
+#: M4r 시드 1 실측(`runs/omen/2026-10-02-m4r-s1/log.jsonl`): 같은 모양 — 예전 규칙은
+#: r4(1/18 = 6%)를 뽑는다. r2 는 9/18 = 50%.
+M4R_S1 = {"stage1": [1.0] * 5,
+          "stage3a": [0.0, 6 / 18, 9 / 18, 1 / 18, 1 / 18],
+          "stage3b": [0.0] * 5}
+THREE = ["stage1", "stage3a", "stage3b"]
+THREE_ARGS = ["--eval-stage", "stage1", "--eval-stage", "stage3a", "--eval-stage", "stage3b"]
+
+
+def _old_retain_then_learn(rounds, retain, learn, floor):
+    """중간 단계 동점 처리가 들어오기 **전**의 규칙 그대로 — 평가 단계가 둘일 때의 기준선."""
+    pool = [r for r in rounds if r[retain]["goal_rate"] >= floor]
+    if pool:
+        return max(pool, key=lambda r: (r[learn]["goal_rate"], r[retain]["goal_rate"], r["round"]))
+    return max(rounds, key=lambda r: (r[retain]["goal_rate"], r[learn]["goal_rate"], r["round"]))
+
+
+@pytest.mark.parametrize("log,want", [(M4Q_S0, 1), (M4R_S1, 2)], ids=["m4q_s0", "m4r_s1"])
+def test_학습_단계가_평평하면_중간_단계가_가른다(rd, log, want):
+    """★ M4q-s0·M4r-s1 재현 — 학습 단계 전부 0, 유지 전부 100% 면 **중간 단계 최대**다.
+
+    예전에는 동점이 곧장 "더 뒤 라운드" 로 떨어져 둘 다 r4(중간 단계가 거의 최저)였다.
+    """
+    rounds = _rows(log)
+    assert rd.pick_round(rounds, "best", "retain-then-learn", THREE, rd.SELECT_FLOOR)["round"] == want
+    assert rd.pick_round(rounds, "best", None, THREE, rd.SELECT_FLOOR)["round"] == want
+    # 예전 규칙이 정말 r4 를 골랐다는 것 — 이 시험이 결함을 재현하고 있다는 증거다.
+    assert _old_retain_then_learn(rounds, "stage1", "stage3b", rd.SELECT_FLOOR)["round"] == 4
+
+
+@pytest.mark.parametrize("log,want", [(M4Q_S0, 1), (M4R_S1, 2)], ids=["m4q_s0", "m4r_s1"])
+def test_중간_단계로_고른_라운드가_요약과_체크포인트와_성적표에_전부_반영된다(
+        rd, harness, tmp_path, monkeypatch, capsys, log, want):
+    """★★ `pick_round()` 만 보면 호출부가 그 답을 안 쓰는 결함을 못 잡는다 — 밖으로 나온 것을 본다.
+
+    요약의 단계별 숫자, 최종 평가가 읽은 체크포인트, `policy-best.pt` 의 바이트, 성적표의
+    채택 줄과 그 기준 문장까지.
+    """
+    _set_goals(harness, **log)
+    out, report = tmp_path / "run", tmp_path / "r.md"
+    summary = _run_main(rd, monkeypatch, capsys,
+                        ["--out", str(out), "--report", str(report),
+                         "--select", "best", *MIN, *THREE_ARGS])
+    assert summary["selected_round"] == want
+    assert summary["stage3a"]["goal_rate"] == pytest.approx(log["stage3a"][want])
+    assert summary["stage3b"]["goal_rate"] == pytest.approx(0.0)
+    assert summary["stage1"]["goal_rate"] == pytest.approx(1.0)
+    assert harness["loaded"][-1].endswith(os.path.join("run", f"policy-r{want}.pt")), \
+        f"최종 평가가 엉뚱한 체크포인트를 읽었다: {harness['loaded'][-1]}"
+    best = out / rd.BEST_CKPT_NAME
+    assert best.read_bytes() == (out / f"policy-r{want}.pt").read_bytes()
+    assert best.read_bytes() != (out / "policy-r4.pt").read_bytes(), \
+        "policy-best.pt 가 마지막 라운드 복사본이다 — 바로 이 결함이다"
+    text = report.read_text(encoding="utf-8")
+    assert f"채택: 라운드 {want}" in text
+    assert f"- 가장 좋았던 라운드: {want}(" in text
+    # 왜 이 라운드인지 읽는 사람이 알 수 있어야 한다 — 기준 문장이 중간 단계를 **이름으로** 말한다.
+    note = summary["select_note"]
+    assert "(동점이면 stage3a 완주율, 그다음 단계 ①, 그다음 더 뒤 라운드)" in note, note
+    assert note in text, "요약과 성적표가 서로 다른 기준을 말한다"
+
+
+def test_학습_단계가_더_높으면_중간_단계가_뒤집지_못한다(rd, harness, tmp_path, monkeypatch,
+                                                        capsys):
+    """★ 중간 단계는 **동점일 때만** 본다 — 학습 단계가 한 판이라도 높은 라운드가 이긴다.
+
+    r0 은 라바콘(③a) 90% 지만 정지차(③b) 0, r1 은 라바콘 0 에 정지차 1/18. 학습 표적은 ③b 다.
+    """
+    log = {"stage1": [1.0] * 5,
+           "stage3a": [0.9, 0.0, 0.5, 0.0, 0.0],
+           "stage3b": [0.0, 1 / 18, 0.0, 0.0, 0.0]}
+    assert rd.pick_round(_rows(log), "best", "retain-then-learn", THREE, 0.8)["round"] == 1
+    _set_goals(harness, **log)
+    out = tmp_path / "run"
+    summary = _run_main(rd, monkeypatch, capsys,
+                        ["--out", str(out), "--report", str(tmp_path / "r.md"),
+                         "--select", "best", *MIN, *THREE_ARGS])
+    assert summary["selected_round"] == 1
+    assert summary["stage3b"]["goal_rate"] == pytest.approx(1 / 18)
+    assert (out / rd.BEST_CKPT_NAME).read_bytes() == (out / "policy-r1.pt").read_bytes()
+
+
+def test_유지_문턱은_중간_단계로_구제되지_않는다(rd, harness, tmp_path, monkeypatch, capsys):
+    """★ 문턱 밑 라운드는 중간 단계가 아무리 좋아도 후보가 아니다.
+
+    r1 은 라바콘 90% 지만 단계 ① 4/6(66.7%) 로 문턱(80%) 밑이다. 문턱을 넘은 r0·r2·r3·r4
+    중에서는 라바콘이 가장 높은 **r0** 이다(예전 규칙이면 더 뒤인 r4 였다).
+    """
+    log = {"stage1": [1.0, 4 / 6, 1.0, 1.0, 1.0],
+           "stage3a": [0.2, 0.9, 0.1, 0.1, 0.1],
+           "stage3b": [0.0] * 5}
+    assert rd.pick_round(_rows(log), "best", "retain-then-learn", THREE, 0.8)["round"] == 0
+    _set_goals(harness, **log)
+    out = tmp_path / "run"
+    summary = _run_main(rd, monkeypatch, capsys,
+                        ["--out", str(out), "--report", str(tmp_path / "r.md"),
+                         "--select", "best", *MIN, *THREE_ARGS])
+    assert summary["selected_round"] == 0
+    assert summary["stage1"]["goal_rate"] == pytest.approx(1.0)
+    assert (out / rd.BEST_CKPT_NAME).read_bytes() == (out / "policy-r0.pt").read_bytes()
+    assert (out / rd.BEST_CKPT_NAME).read_bytes() != (out / "policy-r1.pt").read_bytes()
+
+
+def test_중간_단계가_유지_단계보다_먼저다(rd):
+    """순서는 학습 → **중간** → 유지 → 뒤 라운드다. 둘 다 문턱을 넘었으면 유지가 조금 낮아도
+    (5/6) 이차 기술이 더 좋은 라운드가 낫다 — 문턱이 이미 유지를 지켰다.
+    """
+    rounds = _rows({"stage1": [5 / 6, 1.0], "stage3a": [9 / 18, 7 / 18], "stage3b": [0.0, 0.0]})
+    assert rd.pick_round(rounds, "best", "retain-then-learn", THREE, 0.8)["round"] == 0
+
+
+def test_중간_단계는_첫_단계와_마지막_단계를_안_넣는다(rd):
+    assert rd.middle_stages(THREE) == ["stage3a"]
+    assert rd.middle_stages(["stage1", "stage2", "stage3a", "stage3b"]) == ["stage2", "stage3a"]
+    assert rd.middle_stages(["stage1", "stage3"]) == []
+    assert rd.middle_stages(["stage1"]) == []
+
+
+def test_평가_단계가_둘이면_선택이_예전과_같다(rd):
+    """★ 중간 단계가 없으면 가를 것이 없다 — **예전 규칙과 같은 라운드**여야 한다.
+
+    동점이 흔한 값(0·1/6·5/6·1)으로 판을 많이 만들어 예전 규칙과 하나하나 맞춰 본다.
+    """
+    import random
+    rng = random.Random(0)
+    vals = [0.0, 1 / 6, 5 / 6, 1.0]
+    for _ in range(500):
+        n = rng.randint(1, 6)
+        rounds = _rows({"stage1": [rng.choice(vals) for _ in range(n)],
+                        "stage3": [rng.choice(vals) for _ in range(n)]})
+        want = _old_retain_then_learn(rounds, "stage1", "stage3", 0.8)["round"]
+        assert rd.pick_round(rounds, "best", "retain-then-learn",
+                             ["stage1", "stage3"], 0.8)["round"] == want
+    # 학습 전부 0·유지 전부 100% 면 예전처럼 더 뒤 라운드다(가를 중간 단계가 없다).
+    flat = _rows({"stage1": [1.0] * 5, "stage3": [0.0] * 5})
+    assert rd.pick_round(flat, "best", "retain-then-learn", ["stage1", "stage3"], 0.8)["round"] == 4
+
+
+def test_평가_단계가_둘이면_기준_문장도_예전과_같다(rd, harness, tmp_path, monkeypatch, capsys):
+    """기준 문장이 한 글자도 안 달라진다 — 중간 단계 칸은 중간 단계가 있을 때만 붙는다."""
+    _set_goals(harness, stage1=[1.0] * 5, stage3=[0.0] * 5)
+    out = tmp_path / "run"
+    summary = _run_main(rd, monkeypatch, capsys,
+                        ["--out", str(out), "--report", str(tmp_path / "r.md"), "--select", "best",
+                         *MIN, "--eval-stage", "stage1", "--eval-stage", "stage3"])
+    assert summary["selected_round"] == 4
+    assert (out / rd.BEST_CKPT_NAME).read_bytes() == (out / "policy-r4.pt").read_bytes()
+    assert summary["select_note"] == ("`retain-then-learn`: 단계 ① 완주율 ≥ 80.0% 인 라운드 5/5 개"
+                                      " 중 단계 ③ 완주율 최대(동점이면 단계 ①, 그다음 더 뒤 라운드)")
+
+
+@pytest.mark.parametrize("extra", [[], ["--select", "last"],
+                                   ["--select", "last", "--select-metric", "retain-then-learn"]],
+                         ids=["default", "last", "last_rtl"])
+def test_select_last_는_중간_단계를_안_본다(rd, harness, tmp_path, monkeypatch, capsys, extra):
+    """★ `--select last` 는 예전 그대로 마지막 라운드다 — 중간 단계가 r2 를 가리켜도."""
+    rounds = _rows(M4R_S1)
+    assert rd.pick_round(rounds, "last", None, THREE, 0.8)["round"] == 4
+    assert rd.pick_round(rounds, "last", "retain-then-learn", THREE, 0.8)["round"] == 4
+    _set_goals(harness, **M4R_S1)
+    out, report = tmp_path / "run", tmp_path / "r.md"
+    summary = _run_main(rd, monkeypatch, capsys,
+                        ["--out", str(out), "--report", str(report), *extra, *MIN, *THREE_ARGS])
+    assert summary["select"] == "last" and summary["selected_round"] == 4
+    assert summary["stage3a"]["goal_rate"] == pytest.approx(1 / 18)
+    assert summary["select_note"] == "마지막 라운드를 그대로 채택(선택 안 함)"
+    assert harness["loaded"][-1].endswith(os.path.join("run", "policy-r4.pt"))
+    assert (out / rd.BEST_CKPT_NAME).read_bytes() == (out / "policy-r4.pt").read_bytes()
+    assert "채택:" not in report.read_text(encoding="utf-8")
