@@ -116,6 +116,7 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 - [docs/reports/m4v-ema-grid.md](docs/reports/m4v-ema-grid.md) — **★ 회피 표본 가중 4 배(30 m 안): 평균 그물의 정지차 통과 16% → 60%**(선택 창 EMA), raw 15/15 성공 · 안 쓴 판(보고 창)에서 EMA 55.5% · 고르지 않은 그물이 M4s 의 고른 그물(37.8%)보다 낫다
 - [docs/reports/m4w-dagger-near.md](docs/reports/m4w-dagger-near.md) — 새 손실로 DAgger 를 다시 돌리자 **데이터가 나빠졌다**: 같은 설정 EMA 가 M4s 데이터 60.8% → M4w 데이터 15.6% · 근처 표본은 오히려 많다 → 표본의 종류(선생님 라벨) 가설
 - [docs/reports/m4x-round-data.md](docs/reports/m4x-round-data.md) — 새 손실 학생이 모은 데이터는 **첫 라운드부터** 해롭다(라운드 0~1 만으로 35.3 대 12.0%) · M4s 데이터는 라운드 0~2 가 가장 좋다(66.4%) · 걸음마다 β 섞기가 선생님 계획기를 흔든다는 가설
+- [docs/reports/m4y-best-data.md](docs/reports/m4y-best-data.md) — **★ 라운드 0~2 데이터 · 앵커 2 · 가중 3: 안 쓴 판(보고 창) 정지차 65.8%**(M4v 55.0% → 다섯 짝 모두 상승, ① 100%) · 정지차 흐름 1.4 → 8.8 → 37.8 → 55.0 → 65.8%
 
 ### 여기까지 온 곳
 **PPO 는 M3 모방 학생을 한 번도 못 넘었다 — 학습의 어느 시점에서도.** 목표 판정은 M4a 부터 지금까지
