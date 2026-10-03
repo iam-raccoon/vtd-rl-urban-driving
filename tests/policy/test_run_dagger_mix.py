@@ -12,6 +12,7 @@ import sys
 import types
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
@@ -72,7 +73,50 @@ def test_segment_면_일꾼이_섞기를_넘긴다(rd, monkeypatch, tmp_path):
     job = rd.build_jobs([("c.json", "course_H@v0")], 2, 0.5, None, str(tmp_path), False, 1, 1,
                         mix="episode", mix_len=7)[0]
     rd._collect_job(job)
+    rng = seen[0].pop("rng")                  # 판마다 독립 난수 — 아래 테스트가 값을 본다
+    assert isinstance(rng, np.random.Generator)
     assert seen == [{"policy": None, "beta": 0.5, "seed": 2000, "mix": "episode", "mix_len": 7}]
+
+
+def _first_draws(rd, monkeypatch, tmp_path, names, mix, rnd=1, seeds=1):
+    """작업마다 일꾼이 넘긴 난수의 첫 뽑기를 모은다 — `{(이름, 시드): 첫 random()}`."""
+    seen = []
+    _fake(rd, monkeypatch, seen)
+    jobs = rd.build_jobs([("c.json", n) for n in names], rnd, 0.5, None, str(tmp_path), False, 1,
+                         seeds, mix=mix, mix_len=7)
+    for j in jobs:
+        rd._collect_job(j)
+    return {(j[1], j[2]): kw["rng"].random() for j, kw in zip(jobs, seen)}
+
+
+@pytest.mark.parametrize("mix", ["segment", "episode"])
+def test_step_이_아니면_판마다_독립_난수를_넘긴다(rd, monkeypatch, tmp_path, mix):
+    """★ 한 라운드의 모든 판은 같은 시드를 받는다 — 시드로만 난수를 만들면 동전을 판들이 나눠 쓴다."""
+    seen = []
+    _fake(rd, monkeypatch, seen)
+    job = rd.build_jobs([("c.json", "course_H@v0")], 1, 0.5, None, str(tmp_path), False, 1, 1,
+                        mix=mix, mix_len=7)[0]
+    rd._collect_job(job)
+    assert isinstance(seen[0]["rng"], np.random.Generator)
+
+    # 같은 시드(1000)·다른 판 이름 → 다른 난수 흐름. 24 판이면 첫 뽑기가 전부 달라야 한다.
+    names = [f"course_{c}@v{v}" for c in "ABCDEF" for v in range(4)]
+    draws = _first_draws(rd, monkeypatch, tmp_path, names, mix)
+    assert len(set(draws.values())) == len(names) == 24
+    # 같은 시드·같은 이름 → 같은 첫 뽑기(재현)
+    again = _first_draws(rd, monkeypatch, tmp_path, names, mix)
+    assert again == draws
+    # 같은 이름이라도 시드가 다르면 다르다
+    two = _first_draws(rd, monkeypatch, tmp_path, ["course_A@v0"], mix, seeds=2)
+    assert len(set(two.values())) == 2
+
+
+def test_episode_동전이_판마다_갈린다(rd, monkeypatch, tmp_path):
+    """--seeds 2 에서도 24 판의 동전이 둘로 몰리지 않는다(예전: 시드마다 동전 하나를 전 판이 공유)."""
+    names = [f"course_{c}@v{v}" for c in "ABCDEF" for v in range(4)]
+    draws = _first_draws(rd, monkeypatch, tmp_path, names, "episode", seeds=2)
+    coins = [d >= 0.5 for d in draws.values()]            # β=0.5 — 학생이 몰면 True
+    assert len(draws) == 48 and 8 <= sum(coins) <= 40, sum(coins)
 
 
 def _dry(args):
@@ -121,15 +165,17 @@ class _FakeDataset:
         return 8
 
 
-def _install(module, monkeypatch, jobs_seen):
-    """판·수집·학습·평가만 가짜로 바꾼다. 로그·성적표·체크포인트 저장/읽기는 진짜다."""
+def _install(module, monkeypatch, jobs_seen, meta=None):
+    """판·수집·학습·평가만 가짜로 바꾼다. 로그·성적표·체크포인트 저장/읽기는 진짜다.
+
+    `meta` 는 가짜 수집이 돌려줄 조각 메타(기본 `{"outcome": "goal"}`)."""
     monkeypatch.setattr(module, "time", types.SimpleNamespace(perf_counter=lambda: 0.0))
     monkeypatch.setattr(module, "collect_targets",
                         lambda paths, smoke, variants: [("(fake)", "course_X")])
 
     def fake_collect(job):
         jobs_seen.append(job)               # 수집에 실제로 실린 작업 묶음
-        return {"outcome": "goal"}
+        return dict(meta) if meta is not None else {"outcome": "goal"}
 
     monkeypatch.setattr(module, "_collect_job", fake_collect)
     monkeypatch.setattr(module, "_stall_start_count", lambda *args, **kw: 0)
@@ -167,8 +213,11 @@ def test_로그와_성적표는_step_이_아닐_때만_섞기를_적는다(rd, m
     rows = _log(out)
     assert len(rows) == 2
     assert all(r["mix"] == "segment" and r["mix_len"] == 30 for r in rows)
+    assert all("student_frac" in r and r["student_frac"] is None for r in rows), \
+        "조각 메타에 걸음 수가 없으면 None 이어야 한다"
     text = report.read_text(encoding="utf-8")
     assert "수집 섞기" in text and "--mix segment" in text and "30" in text
+    assert "실현 학생" not in text
 
     jobs.clear()
     out, report = tmp_path / "plain", tmp_path / "plain.md"
@@ -176,7 +225,7 @@ def test_로그와_성적표는_step_이_아닐_때만_섞기를_적는다(rd, m
     assert jobs and all((j[-3], j[-2]) == ("step", 30) for j in jobs)
     rows = _log(out)
     assert len(rows) == 2
-    assert all("mix" not in r and "mix_len" not in r for r in rows), \
+    assert all("mix" not in r and "mix_len" not in r and "student_frac" not in r for r in rows), \
         "기본(step) 실행의 로그 행에 새 칸이 생겼다"
     assert "수집 섞기" not in report.read_text(encoding="utf-8"), \
         "기본(step) 실행의 성적표에 새 줄이 생겼다"
@@ -199,3 +248,29 @@ def test_성적표만_다시_만들_때는_로그의_섞기를_따른다(rd, mon
     _run_main(rd, monkeypatch, capsys, ["--out", str(out2), "--report", str(tmp_path / "d.md"),
                                         "--report-only", *MIN])
     assert "수집 섞기" not in (tmp_path / "d.md").read_text(encoding="utf-8")
+
+
+def test_로그는_실현_학생_비율을_적는다(rd, monkeypatch, tmp_path, capsys):
+    """★ 설정 β 가 아니라 조각 메타의 `student_steps / steps` — 판·구간 단위 섞기에서 실제 비율을 본다."""
+    _install(rd, monkeypatch, [], meta={"outcome": "goal", "steps": 40, "student_steps": 10})
+    out, report = tmp_path / "ep", tmp_path / "ep.md"
+    _run_main(rd, monkeypatch, capsys, ["--out", str(out), "--report", str(report), *MIN,
+                                        "--mix", "episode"])
+    rows = _log(out)
+    assert len(rows) == 2
+    assert all(isinstance(r["student_frac"], float) and r["student_frac"] == 0.25 for r in rows)
+    text = report.read_text(encoding="utf-8")
+    assert "실현 학생" in text and "r0=25%" in text and "r1=25%" in text
+
+    out2 = tmp_path / "plain"
+    _run_main(rd, monkeypatch, capsys, ["--out", str(out2), "--report", str(tmp_path / "p.md"),
+                                        *MIN])
+    assert all("student_frac" not in r for r in _log(out2))
+
+
+def test_학생_비율은_걸음이_0_이거나_칸이_없으면_None(rd):
+    assert rd.student_frac([{"steps": 40, "student_steps": 10},
+                            {"steps": 60, "student_steps": 15}]) == 0.25
+    assert rd.student_frac([{"steps": 0, "student_steps": 0}]) is None
+    assert rd.student_frac([{"outcome": "goal"}]) is None
+    assert rd.student_frac([]) is None

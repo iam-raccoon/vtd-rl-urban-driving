@@ -51,7 +51,9 @@ import platform
 import shutil
 import sys
 import time
+import zlib
 
+import numpy as np
 import torch
 
 REPO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
@@ -434,6 +436,20 @@ def build_jobs(targets, rnd, beta, policy_path, data_dir, smoke, variants, seeds
             for path, name in targets for s in range(seeds)]
 
 
+def student_frac(metas):
+    """한 라운드 수집에서 **실제로 학생이 몬 걸음의 비율** — 설정 β 가 아니라 실현값.
+
+    섞기 단위가 판·구간이면 동전이 몇 개 안 돼서 실현 비율이 β 와 크게 어긋날 수 있다.
+    조각 메타에 `steps`·`student_steps` 가 없으면(가짜·옛 조각) None, 걸음이 0 이어도 None.
+    """
+    try:
+        steps = sum(m["steps"] for m in metas)
+        student = sum(m["student_steps"] for m in metas)
+    except (KeyError, TypeError):
+        return None
+    return float(student) / float(steps) if steps else None
+
+
 def job_board(job):
     """작업 묶음이 가리키는 판을 다시 짓는다 — 수집은 spawn 프로세스라 묶음만 보고 짓는다."""
     curriculum, name, _seed, _beta, _policy, _out, _rnd, smoke, _mix, _mix_len, variants = job
@@ -451,6 +467,12 @@ def _collect_job(job):
     policy = DrivePolicy.load(policy_path) if policy_path else None
     # 기본(step)은 예전과 **같은 인자**로 부른다 — 과거 실행과 비트 동일.
     kw = {} if mix == "step" else {"mix": mix, "mix_len": mix_len}
+    if mix != "step":
+        # ★ `build_jobs` 는 한 라운드의 모든 판·변종에 **같은 시드**(1000*rnd+s)를 준다. 그 시드로
+        # 난수를 만들면 episode 동전은 그 시드 하나의 첫 뽑기를 24 판이 나눠 쓰고(--seeds 2 면 라운드
+        # 에 동전이 둘뿐), segment 는 24 판이 똑같은 구간 무늬를 얻는다. 그래서 (시드, 판 이름)마다
+        # 독립 난수를 따로 만든다. 이름은 crc32 로 — `hash()` 는 프로세스마다 달라 재현이 깨진다.
+        kw["rng"] = np.random.default_rng([seed, zlib.crc32(name.encode("utf-8"))])
     shard = collect_episode(board, policy=policy, beta=beta, seed=seed, **kw)
     save_shard(shard, os.path.join(out, f"r{rnd}-{name}-s{seed}.npz"))
     return shard.meta
@@ -1027,7 +1049,8 @@ def main():
                    "train_seed": tcfg.seed}
             # 기본(step)이면 이 칸이 **없다** — 로그 한 줄이 예전과 바이트까지 같다.
             if a.mix != "step":
-                row.update({"mix": a.mix, "mix_len": a.mix_len})
+                row.update({"mix": a.mix, "mix_len": a.mix_len,
+                            "student_frac": student_frac(metas)})
             # 평가는 단계마다 그 단계 이름을 열쇠로 넣는다 — 기본값이면 예전과 같은
             # `"stage1"`·`"stage2"` 가 그대로 나와 옛 로그·`--report-only` 와 호환된다.
             for stage, boards_e in eval_boards(eval_names, a.smoke):
@@ -1145,10 +1168,15 @@ def main():
     # 아니라 **로그의 값**(실제로 쓴 것)이다 — `--report-only` 에서 `--mix` 를 안 줘도 맞다.
     # 옛 로그에는 `mix` 칸이 없다 — 그때는 안 적는다.
     if rounds[0].get("mix"):
+        # 설정이 아니라 **실현된** 학생 비율 — 동전이 몇 개 안 되면 β 와 크게 다르다.
+        # 옛 로그·가짜 조각에는 칸이 없거나 None 이다 — 그 라운드는 건너뛴다.
+        fracs = [f"r{r['round']}={r['student_frac']:.0%}" for r in rounds
+                 if r.get("student_frac") is not None]
         lines.append(f"- 수집 섞기: `--mix {rounds[0]['mix']}`"
                      + (f" · 구간 {rounds[0]['mix_len']} 걸음" if rounds[0]["mix"] == "segment"
                         else "")
-                     + " — 기본(step: 걸음마다)과 다르다.")
+                     + " — 기본(step: 걸음마다)과 다르다."
+                     + (f" 라운드별 실현 학생 걸음 비율 {' · '.join(fracs)}." if fracs else ""))
     # 선택 창을 켰을 때만 붙는 줄 — 아래 첫 표(원본 판)와 선택이 쓴 숫자를 헷갈리지 않게.
     if use_window:
         lines.append(f"- 라운드 선택은 **선택 창 `{select_source}`** 평가로 했다 — 아래 첫 표의"

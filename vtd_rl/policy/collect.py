@@ -12,6 +12,8 @@ DAgger 의 핵심은 '학생이 간 상태에서의 선생님 답'이다. 그래
 나온 명령만 따로 받아 라벨로 쓴다. 몰기(행동 선택)는 그대로 `teacher.act()`(선생님이 몰 때) —
 `run_teacher_in_env` 와 같은 값이라 완주 여부가 달라지지 않는다.
 """
+import numbers
+
 import numpy as np
 
 from vtd_rl.env.action import from_command
@@ -45,6 +47,10 @@ class DriverSchedule:
     def __init__(self, beta, mix, mix_len, rng, has_policy):
         if mix not in MIX_MODES:
             raise ValueError(f"모르는 mix {mix!r} — {MIX_MODES} 중 하나")
+        # 정수만 받는다 — `int(2.5)` 가 조용히 2 로 깎이면 요청과 다른 구간 길이로 수집한다.
+        # 파이썬 int 와 numpy 정수(`numbers.Integral` 에 등록돼 있다)는 통과한다.
+        if not isinstance(mix_len, numbers.Integral):
+            raise ValueError(f"mix_len 은 정수여야 한다(mix={mix!r}) — {mix_len!r}")
         if int(mix_len) < 1:
             raise ValueError(f"mix_len 은 1 이상이어야 한다(mix={mix!r}) — {mix_len!r}")
         self.beta, self.mix, self.mix_len = float(beta), mix, int(mix_len)

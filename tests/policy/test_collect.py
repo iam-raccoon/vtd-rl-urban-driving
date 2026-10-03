@@ -156,6 +156,17 @@ def test_잘못된_mix_는_거부한다(bad):
                         mix_len=bad.get("mix_len", 30))
 
 
+def test_정수가_아닌_mix_len_은_거부하고_numpy_정수는_받는다():
+    """`int(2.5)` 가 조용히 2 로 깎이지 않게 — 파이썬 int·numpy 정수만 통과한다."""
+    with pytest.raises(ValueError, match="mix"):
+        DriverSchedule(0.5, "segment", 2.5, np.random.default_rng(0), True)
+    with pytest.raises(ValueError, match="mix"):
+        collect_episode(short_board(), beta=0.5, seed=0, mix="segment", mix_len=2.5)
+    for ok in (5, np.int64(5), np.int32(5)):
+        s = DriverSchedule(0.5, "segment", ok, np.random.default_rng(0), True)
+        assert s.mix_len == 5 and type(s.mix_len) is int
+
+
 def test_기본값은_step_과_같고_meta_에_새_키가_없다():
     net = DrivePolicy(PolicyConfig(trunk=(32, 32)))
     a = collect_episode(short_board(), policy=net, beta=0.5, seed=4, max_steps=150)
