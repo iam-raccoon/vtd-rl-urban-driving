@@ -12,9 +12,11 @@
 OMP_NUM_THREADS=1 env -u PYTHONPATH .venv/bin/python scripts/train_ppo.py \
   --out runs/omen/2026-10-04-m6a-s$S --init runs/omen/2026-10-04-m4y/K2-a2-w3-s$S/policy-ema2500.pt \
   --curricula curricula/stage1.json curricula/stage2.json curricula/stage3b.json \
-  --steps 1000000 --eval-every 100000 --eval-seeds 1 --final-eval-seeds 3 \
+  --steps 1000000 --eval-every 250000 --eval-seeds 1 --final-eval-seeds 3 --envs 10 \
   --violation-mode once_per_section --comfort-on-intent --seed $S
 ```
+
+- 세 시드를 **동시에**(시드마다 환경 10 개) 돌린다. 중간 평가(단계마다 원본 판 6 개를 한 프로세스가 차례로 몬다)가 학습보다 오래 걸려 25 만 걸음마다로 줄였다. `--smoke` 로 명령·체크포인트·정책망 꺼내기를 먼저 확인했다.
 
 - 학습 판은 단계 ①·②·③b 원본 판 18 개(③b 원본은 v0 와 같은 배치 — 수집 창 안). 판은 리셋마다 무작위.
 - 보상은 M4d 에서 고친 설정(위반은 구간당 한 번, 승차감은 평균 행동 변화로).
