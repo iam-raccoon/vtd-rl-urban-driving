@@ -121,6 +121,7 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 - [docs/reports/m5a-near-states.md](docs/reports/m5a-near-states.md) — 정지차 앞 상태 비교(학습 없음): 선생님은 61% 서 있고, 옛 손실 학생은 덜 서고 달려들며(42%), 새 손실 학생은 선생님처럼 더 선다(51~55%) — 움직이며 다가가는 상태의 라벨이 필요하다는 가설
 - [docs/reports/m5b-more-good-data.md](docs/reports/m5b-more-good-data.md) — 좋은 수집자로 r1·r2 만 두 배로 늘리자 **오히려 내려갔다**(선택 창 70.8 → 52.0%, 갱신 수를 묶어도 62.2%) · r0(선생님) 비중이 41 → 25~26% 로 준 탓이라는 가설
 - [docs/reports/m5c-ratio.md](docs/reports/m5c-ratio.md) — 구성비가 아니라 **갱신 횟수**였다: 전 라운드 두 배 · 8 에폭 53.6% → 갱신을 M4y 와 같게 묶으면 67.5%(선택 창) · 데이터를 늘려도 기준(70.8%)을 못 넘는다
+- [docs/reports/m5d-epochs.md](docs/reports/m5d-epochs.md) — 학습 길이 곡선은 산 모양(2·4·6·8·12 에폭 = 33 · 69 · 73 · 66 · 63%)이지만 6 에폭도 미리 적은 문턱(4/5 시드)을 못 넘는다 → 이 설정은 평탄한 구간
 
 ### 여기까지 온 곳
 **PPO 는 M3 모방 학생을 한 번도 못 넘었다 — 학습의 어느 시점에서도.** 목표 판정은 M4a 부터 지금까지
