@@ -147,3 +147,26 @@ def test_겹치는_시드만_짝짓는다(tmp_path, capsys):
     arm = [ln for ln in paired.splitlines() if ln.startswith("| arm |")][0]
     assert "1,2 (n=2)" in arm, arm      # 시드 9 는 기준선에 없으니 빠진다
     assert "+30.0pp" in arm, arm        # 0.5 - 0.2 = +0.3
+
+
+def test_단계_이름을_박지_않고_JSONL_에서_읽는다(tmp_path, capsys):
+    """③ 단계로 잰 줄의 `stage3b` 가 표에서 조용히 사라지면 안 된다(예전 `STAGES` 박아두기)."""
+    m = _load()
+    met = {"det_goal": 0.5, "sto_goal": 1.0, "det_score_completed": 90.0, "sto_score_completed": 90.0}
+    rows = [{"checkpoint": f"runs/x/base-s{s}/ac-1.pt", "stage1": met, "stage3b": dict(met, det_goal=0.25)}
+            for s in (0, 1)]
+    p = tmp_path / "dvs.jsonl"
+    p.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    data = m.load(str(p))
+    assert m.stages_of(data) == ["stage1", "stage3b"]
+    assert "checkpoint" not in data[("base", 0)]
+    import sys
+    argv = sys.argv
+    sys.argv = ["summarize_dvs.py", "--jsonl", str(p)]
+    try:
+        m.main()
+    finally:
+        sys.argv = argv
+    out = capsys.readouterr().out
+    assert "## stage3b" in out and "25.0%" in out
+    assert "## stage2" not in out      # 없는 단계를 빈 표로 지어내지 않는다

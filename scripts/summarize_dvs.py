@@ -19,7 +19,6 @@ import re
 from collections import defaultdict
 from math import comb
 
-STAGES = ("stage1", "stage2")
 # 결정적 완주율이 이 마일스톤의 1 순위 지표다(배포되는 것은 평균 행동이므로).
 METRICS = ("det_goal", "sto_goal", "det_score_completed", "sto_score_completed")
 
@@ -55,8 +54,28 @@ def load(jsonl: str, alias: dict | None = None):
             if key in out:
                 raise SystemExit(f"같은 (설정, 시드) 가 두 번 나왔다: {key} — "
                                  f"별칭이 서로 다른 실행을 겹쳐 덮고 있다")
-            out[key] = {st: row[st] for st in STAGES if st in row}
+            out[key] = {st: v for st, v in row.items() if _is_stage(v)}
     return out
+
+
+def _is_stage(v) -> bool:
+    """JSONL 한 줄의 값이 **단계 결과**인가 — 지표 키(`METRICS`)를 하나라도 가진 dict.
+
+    예전에는 단계 이름을 `("stage1", "stage2")` 로 박아 둬서, ③ 단계 커리큘럼으로 잰 줄의
+    `stage3a`·`stage3b` 가 **조용히 버려졌다**(표에 안 나오고 경고도 없음). 이름이 아니라
+    모양으로 고른다 — `checkpoint`(문자열) 같은 다른 키는 dict 가 아니라 걸리지 않는다.
+    """
+    return isinstance(v, dict) and any(m in v for m in METRICS)
+
+
+def stages_of(data: dict) -> list:
+    """`load()` 결과에 나온 단계 이름을 **처음 나온 순서대로** 모은다(설정마다 달라도 합집합)."""
+    seen = []
+    for per_stage in data.values():
+        for st in per_stage:
+            if st not in seen:
+                seen.append(st)
+    return seen
 
 
 def _mean(xs):
@@ -104,9 +123,10 @@ def main():
         alias[k] = v
     data = load(a.jsonl, alias)
     names = sorted({n for n, _ in data})
+    stages = stages_of(data)
 
     print(f"# {os.path.basename(a.jsonl)} — 설정별 평균\n")
-    for st in STAGES:
+    for st in stages:
         print(f"## {st}\n")
         print("| 설정 | 시드 | " + " | ".join(METRICS) + " |")
         print("|---|---|" + "---|" * len(METRICS))
@@ -128,7 +148,7 @@ def main():
         raise SystemExit(f"기준선 설정 '{base}' 가 JSONL 에 없다 — 있는 것: {names}")
 
     print(f"# 시드로 짝지은 비교 — 기준선 `{base}`, 지표 `{a.metric}`\n")
-    for st in STAGES:
+    for st in stages:
         print(f"## {st}\n")
         print(f"| 설정 | 짝지은 시드 | 기준선 | 개입 | 차이 | 개선/악화 | 부호검정 p |")
         print("|---|---|---|---|---|---|---|")
