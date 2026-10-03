@@ -151,19 +151,21 @@ def start_net(init: str, dev) -> DrivePolicy:
 
 
 def refit(init, dataset, upto, batch_seed, epochs, max_updates, anchor_coef, init_seed, dev,
-          ema_halflives=()):
+          ema_halflives=(), near_m=0.0, near_weight=1.0):
     """`run_dagger.py:952-987` 과 같은 순서로 그물 하나를 학습한다 → `(net, train, ema)`.
 
     `ema_halflives` 를 주면 `EmaTracker` 를 학습 그물을 만든 **뒤**, 학습 **전**에 만든다 —
     복사만 하므로 난수를 안 쓰고, 학습 그물은 안 주었을 때와 비트 단위로 같다. 안 주면
-    `ema` 는 `None` 이다.
+    `ema` 는 `None` 이다. `near_m`·`near_weight` 는 `TrainConfig` 로 그대로 넘긴다(기본값이면
+    지금과 같다 — `run_dagger.py:984-986` 도 같은 두 값을 넘긴다).
     """
     ref = make_reference(start_net(init, dev)) if anchor_coef > 0.0 else None
     torch.manual_seed(init_seed + upto)
     net = start_net(init, dev)
     ema = EmaTracker(net, ema_halflives) if ema_halflives else None
     tcfg = squash_aligned(TrainConfig(epochs=epochs, seed=batch_seed, anchor_coef=anchor_coef,
-                                      max_updates=max_updates), net)
+                                      max_updates=max_updates, near_m=near_m,
+                                      near_weight=near_weight), net)
     train = train_epochs(net, dataset, tcfg, device=dev, ref=ref, ema=ema)
     return net, train, ema
 
@@ -205,6 +207,7 @@ def build_row(a, samples, max_updates, epochs, train, compare, ev, seconds, dev,
             "window": window_label(a.window_variants, a.window_offset),
             "eval_seeds": a.eval_seeds, "eval": ev, "seconds": seconds,
             "device": str(dev), "host": platform.node(), "rule_stack": rs.commit()[:7],
+            "near_m": a.near_m, "near_weight": a.near_weight,
             "ema": ema}
 
 
@@ -228,6 +231,10 @@ def parse(argv):
     ap.add_argument("--window-variants", type=int, default=4)
     ap.add_argument("--window-offset", type=int, default=8)
     ap.add_argument("--eval-seeds", type=int, default=3)
+    ap.add_argument("--near-m", type=float, default=0.0,
+                    help="회피 가중을 걸 거리(최근접 물체가 전방 이 m 안). 0 이면 끔")
+    ap.add_argument("--near-weight", type=float, default=1.0,
+                    help="그 표본의 손실 배율. 1 이면 가중 없음")
     ap.add_argument("--compare", default=None, help="가중치가 같은지 볼 체크포인트")
     ap.add_argument("--ema-halflife", type=int, action="append", default=[],
                     help="가중치 지수이동평균의 반감기(걸음 수, 반복 가능) — policy-ema{H}.pt 로 저장")
@@ -247,6 +254,10 @@ def parse(argv):
         ap.error(f"--ema-halflife 는 양의 정수(걸음 수)여야 한다 — {bad}")
     if len(set(a.ema_halflife)) != len(a.ema_halflife):
         ap.error(f"--ema-halflife 에 같은 값이 있다 — {a.ema_halflife}")
+    if a.near_m < 0.0:
+        ap.error(f"--near-m 은 0 이상이어야 한다 — {a.near_m}")
+    if a.near_weight <= 0.0:
+        ap.error(f"--near-weight 는 0 보다 커야 한다 — {a.near_weight}")
     # 오타는 데이터를 올리기 전에, --dry-run 에서도 잡는다
     if not os.path.exists(a.init):
         ap.error(f"--init 체크포인트가 없다: {a.init}")
@@ -276,6 +287,9 @@ def main(argv=None) -> int:
         print(f"예산: {'없음(에폭대로)' if max_updates is None else max_updates} 걸음"
               f"{'' if a.updates_like is None else f' (라운드 0~{a.updates_like} 를 {a.epochs} 에폭)'}"
               f" · 실효 에폭 {epochs} · 배치 시드 {a.batch_seed} · 앵커 {a.anchor_coef}")
+        near = ("없음" if a.near_m <= 0.0 or a.near_weight == 1.0
+                else f"전방 {a.near_m:g} m 안 × {a.near_weight:g}")
+        print(f"회피 가중: {near}")
         print(f"평가: {'안 함' if a.no_eval else f'{win} · 단계 {a.eval_stage} · 평가 시드 {a.eval_seeds}'}")
         print(f"EMA: {'없음' if not a.ema_halflife else '반감기 ' + ', '.join(map(str, a.ema_halflife)) + ' 걸음'}")
         print(f"비교: {a.compare or '없음'} · 출력: {a.out}")
@@ -285,7 +299,8 @@ def main(argv=None) -> int:
     t0 = time.perf_counter()
     net, train, ema = refit(a.init, dataset, a.upto, a.batch_seed, epochs, max_updates,
                             a.anchor_coef, a.init_seed, dev,
-                            ema_halflives=tuple(a.ema_halflife))
+                            ema_halflives=tuple(a.ema_halflife), near_m=a.near_m,
+                            near_weight=a.near_weight)
     samples = len(dataset)
     del dataset
     gc.collect()                 # 평가 전에 데이터를 놓는다 — 병렬 갈래가 메모리를 나눠 쓴다

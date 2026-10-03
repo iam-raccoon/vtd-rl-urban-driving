@@ -19,7 +19,8 @@ import torch
 from vtd_rl.policy.dataset import DaggerDataset, Shard, load_shard, save_shard
 from vtd_rl.policy.encode import OBJ_DIM, OBJ_N, VEC_DIM
 from vtd_rl.policy.net import DrivePolicy, PolicyConfig
-from vtd_rl.policy.train import TrainConfig, make_reference, squash_aligned, train_epochs
+from vtd_rl.policy.train import (OBJ_X_M, TrainConfig, make_reference, squash_aligned,
+                                 train_epochs)
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 SCRIPT = os.path.join(REPO, "scripts", "refit_round.py")
@@ -495,3 +496,100 @@ def test_dry_run_은_ema_반감기를_보여준다(rr, tmp_path, capsys):
     text = capsys.readouterr().out
     assert "EMA" in text and "2500" in text and "500" in text
     assert not (tmp_path / "o").exists()
+
+
+# ── M4v: --near-m / --near-weight ────────────────────────────────────────────
+
+def _obj_run(tmp_path, rounds=2, n=40, near_rows=20, fx_m=10.0):
+    """조각마다 앞쪽 `near_rows` 행의 최근접 슬롯에 전방 `fx_m` m 물체를 둔 가짜 실행."""
+    data = tmp_path / "objrun" / "data"
+    for k in range(rounds):
+        for i in range(2):
+            sh = _shard(n, 100 * k + i)
+            sh.objs[:near_rows, 0, 0] = fx_m / OBJ_X_M
+            sh.mask[:near_rows, 0] = 1.0
+            save_shard(sh, str(data / f"r{k}-course_X@v{i}-s0.npz"))
+    return tmp_path / "objrun"
+
+
+def test_near_기본값은_예전과_비트_동일(rr, tmp_path):
+    run = _obj_run(tmp_path)
+    init = _init_ckpt(tmp_path)
+    base = ["--run", str(run), "--upto", "1", "--init", init, "--anchor-coef", "3",
+            "--batch-seed", "2", "--epochs", "2", "--device", "cpu", "--no-eval"]
+    assert _main(rr, base + ["--out", str(tmp_path / "plain")]) == 0
+    assert _main(rr, base + ["--out", str(tmp_path / "explicit"), "--near-m", "0",
+                             "--near-weight", "1",
+                             "--compare", str(tmp_path / "plain" / "policy.pt")]) == 0
+    row = json.loads((tmp_path / "explicit" / "row.json").read_text(encoding="utf-8"))
+    assert row["compare"]["identical"] is True
+    plain = json.loads((tmp_path / "plain" / "row.json").read_text(encoding="utf-8"))
+    assert plain["near_m"] == 0.0 and plain["near_weight"] == 1.0
+    assert {"train", "eval", "compare", "ema", "upto", "batch_seed"} <= set(plain)
+
+
+def test_near_가중이_학습에_닿는다(rr, tmp_path):
+    run = _obj_run(tmp_path)
+    init = _init_ckpt(tmp_path)
+    base = ["--run", str(run), "--upto", "1", "--init", init, "--anchor-coef", "3",
+            "--batch-seed", "2", "--epochs", "2", "--device", "cpu", "--no-eval"]
+    assert _main(rr, base + ["--out", str(tmp_path / "plain")]) == 0
+    assert _main(rr, base + ["--out", str(tmp_path / "near"), "--near-m", "30",
+                             "--near-weight", "16",
+                             "--compare", str(tmp_path / "plain" / "policy.pt")]) == 0
+    row = json.loads((tmp_path / "near" / "row.json").read_text(encoding="utf-8"))
+    assert row["compare"]["identical"] is False
+    assert row["near_m"] == 30.0 and row["near_weight"] == 16.0
+    assert 0.3 < row["train"]["near_frac"] < 0.7          # 행의 절반에 10 m 물체
+
+
+def test_물체가_없으면_near_frac_은_0(rr, tmp_path):
+    run = _fake_run(tmp_path, rounds=2)                    # 물체 없는 조각
+    init = _init_ckpt(tmp_path)
+    out = tmp_path / "out"
+    assert _main(rr, ["--run", str(run), "--upto", "1", "--init", init, "--anchor-coef", "0",
+                      "--batch-seed", "0", "--epochs", "1", "--near-m", "30",
+                      "--near-weight", "16", "--out", str(out), "--device", "cpu",
+                      "--no-eval"]) == 0
+    row = json.loads((out / "row.json").read_text(encoding="utf-8"))
+    assert row["train"]["near_frac"] == 0.0
+
+
+def test_refit_은_near_값을_TrainConfig_로_넘긴다(rr, tmp_path):
+    run = _obj_run(tmp_path)
+    init = _init_ckpt(tmp_path)
+    net, train, _ = rr.refit(init, rr.load_upto(str(run / "data"), 1), upto=1, batch_seed=5,
+                             epochs=2, max_updates=None, anchor_coef=3.0, init_seed=0,
+                             dev="cpu", near_m=30.0, near_weight=4.0)
+    ref = make_reference(rr.start_net(init, "cpu"))
+    torch.manual_seed(0 + 1)
+    want = rr.start_net(init, "cpu")
+    tcfg = squash_aligned(TrainConfig(epochs=2, seed=5, anchor_coef=3.0, near_m=30.0,
+                                      near_weight=4.0), want)
+    want_train = train_epochs(want, rr.load_upto(str(run / "data"), 1), tcfg, device="cpu",
+                              ref=ref)
+    assert _same(_params(net), _params(want))
+    assert train["near_frac"] == want_train["near_frac"] > 0.0
+
+
+@pytest.mark.parametrize("bad", [["--near-m", "-1"], ["--near-weight", "0"],
+                                 ["--near-weight", "-2"]])
+def test_잘못된_near_값은_거부한다(rr, tmp_path, bad):
+    run = _fake_run(tmp_path, rounds=2)
+    init = _init_ckpt(tmp_path)
+    with pytest.raises(SystemExit) as e:
+        _main(rr, ["--run", str(run), "--upto", "1", "--init", init, "--anchor-coef", "0",
+                   "--batch-seed", "0", "--out", str(tmp_path / "o"), "--device", "cpu",
+                   "--no-eval"] + bad)
+    assert e.value.code == 2
+    assert not (tmp_path / "o").exists()
+
+
+def test_dry_run_은_회피_가중을_보여준다(rr, tmp_path, capsys):
+    run = _fake_run(tmp_path, rounds=2)
+    init = _init_ckpt(tmp_path)
+    assert _main(rr, ["--run", str(run), "--upto", "1", "--init", init, "--anchor-coef", "3",
+                      "--batch-seed", "2", "--near-m", "30", "--near-weight", "4",
+                      "--out", str(tmp_path / "o"), "--device", "cpu", "--dry-run"]) == 0
+    text = capsys.readouterr().out
+    assert "회피 가중" in text and "30" in text and "4" in text
