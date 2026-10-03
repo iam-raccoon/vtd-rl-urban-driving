@@ -124,6 +124,7 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 - [docs/reports/m5d-epochs.md](docs/reports/m5d-epochs.md) — 학습 길이 곡선은 산 모양(2·4·6·8·12 에폭 = 33 · 69 · 73 · 66 · 63%)이지만 6 에폭도 미리 적은 문턱(4/5 시드)을 못 넘는다 → 이 설정은 평탄한 구간
 - [docs/reports/m5e-scorecard.md](docs/reports/m5e-scorecard.md) — **현재 최고 그물 종합 성적(보고 창)**: ① 100% · 98.5 / ② 100% · 93.8 / ③a 74.7% / ③b 65.8% / ③ 전체 3.6%(출발점 0%, 총걸음 2 배)
 - [docs/reports/m6a-ppo-probe.md](docs/reports/m6a-ppo-probe.md) — 정지차 단계 PPO 탐침: **앵커 없는 PPO 는 배운 회피를 무너뜨린다**(선택 창 ③b 68.5 → 48.1%, 25 만~50 만 걸음 안에 무너짐) → 다음은 KL 앵커
+- [docs/reports/m6b-ppo-anchor.md](docs/reports/m6b-ppo-anchor.md) — **KL 앵커를 단 PPO 가 처음으로 출발점을 크게 넘었다**: 계수 0.03 에서 ③b 선택 창 68.5 → 97.2% · 보고 창 59.7 → 92.6%(①② 100% 유지). 앵커 없이도 고른 체크포인트는 오르지만 끝점이 출렁인다. 덤: ③a 81.5 → 97.7%, ③ 전체 8.8 → 37.0%(선택 창, 학습에 안 쓴 단계)
 
 ### 여기까지 온 곳
 **PPO 는 M3 모방 학생을 한 번도 못 넘었다 — 학습의 어느 시점에서도.** 목표 판정은 M4a 부터 지금까지
