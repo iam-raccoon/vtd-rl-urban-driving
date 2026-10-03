@@ -118,6 +118,7 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 - [docs/reports/m4x-round-data.md](docs/reports/m4x-round-data.md) — 새 손실 학생이 모은 데이터는 **첫 라운드부터** 해롭다(라운드 0~1 만으로 35.3 대 12.0%) · M4s 데이터는 라운드 0~2 가 가장 좋다(66.4%) · 걸음마다 β 섞기가 선생님 계획기를 흔든다는 가설
 - [docs/reports/m4y-best-data.md](docs/reports/m4y-best-data.md) — **★ 라운드 0~2 데이터 · 앵커 2 · 가중 3: 안 쓴 판(보고 창) 정지차 65.8%**(M4v 55.0% → 다섯 짝 모두 상승, ① 100%) · 정지차 흐름 1.4 → 8.8 → 37.8 → 55.0 → 65.8%
 - [docs/reports/m4z-mix-unit.md](docs/reports/m4z-mix-unit.md) — 수집 β 를 걸음·3 초 구간·판 단위로 섞어도 새 손실 학생 데이터는 모두 나쁘다(7.2 / 12.2 / 6.1% 대 70.8%) → 섞는 단위가 아니라 **새 손실 학생이 만드는 상태**가 문제
+- [docs/reports/m5a-near-states.md](docs/reports/m5a-near-states.md) — 정지차 앞 상태 비교(학습 없음): 선생님은 61% 서 있고, 옛 손실 학생은 덜 서고 달려들며(42%), 새 손실 학생은 선생님처럼 더 선다(51~55%) — 움직이며 다가가는 상태의 라벨이 필요하다는 가설
 
 ### 여기까지 온 곳
 **PPO 는 M3 모방 학생을 한 번도 못 넘었다 — 학습의 어느 시점에서도.** 목표 판정은 M4a 부터 지금까지
