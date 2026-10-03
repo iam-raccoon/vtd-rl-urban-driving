@@ -7,8 +7,8 @@ import torch
 from vtd_rl.policy.dataset import DaggerDataset, Shard
 from vtd_rl.policy.encode import OBJ_DIM, OBJ_N, VEC_DIM
 from vtd_rl.policy.net import DrivePolicy, PolicyConfig, _tanh_log_det
-from vtd_rl.policy.train import (TrainConfig, evaluate_labels, make_reference, near_object_rows,
-                                 policy_loss, train_epochs)
+from vtd_rl.policy.train import (EmaTracker, TrainConfig, evaluate_labels, make_reference,
+                                 near_object_rows, policy_loss, train_epochs)
 
 
 def toy_dataset(n=512, seed=0):
@@ -788,3 +788,101 @@ def test_max_updates_가_0이하면_학습_전에_거부한다(bad):
     with pytest.raises(ValueError, match="max_updates"):
         train_epochs(net, toy_dataset(64), TrainConfig(epochs=1, batch_size=32, max_updates=bad))
     assert _same(before, _params(net))
+
+
+# ── M4u: 가중치 지수이동평균(EMA) ─────────────────────────────────────────────────
+# 학습 한 번의 운(M4t: 같은 조건에서 ③b 0~31%)이 궤적 끝의 잡음이면 EMA 가 줄인다.
+# EMA 는 학습 그물을 **읽기만** 해야 한다 — 켜도 학습 그물은 비트 단위로 같아야 한다.
+
+
+def test_ema_를_켜도_학습_그물은_비트_동일하다():
+    ds = toy_dataset(300)
+    a, b = _fresh(), _fresh()
+    out_a = train_epochs(a, ds, TrainConfig(epochs=2, batch_size=128, seed=7))
+    ema = EmaTracker(b, [3, 50])
+    out_b = train_epochs(b, ds, TrainConfig(epochs=2, batch_size=128, seed=7), ema=ema)
+    assert _same(_params(a), _params(b))
+    assert out_a["loss"] == out_b["loss"] and out_a["updates"] == out_b["updates"]
+
+
+def test_ema_한_걸음은_decay_가중_평균이다():
+    ds = toy_dataset(128)                      # 128 / 128 → 한 에폭 = 한 걸음
+    net = _fresh()
+    p0 = _params(net)
+    ema = EmaTracker(net, [1])                 # 반감기 1 걸음 → decay 0.5
+    assert ema.decay[1] == 0.5
+    train_epochs(net, ds, TrainConfig(epochs=1, batch_size=128), ema=ema)
+    p1 = _params(net)
+    for k in p0:
+        assert torch.allclose(ema.avg[1][k], 0.5 * p0[k] + 0.5 * p1[k], atol=1e-7)
+
+
+def test_ema_decay_는_반감기의_정의를_따른다():
+    ema = EmaTracker(_fresh(), [2500, 500])
+    for h, d in ema.decay.items():
+        assert abs(d ** h - 0.5) < 1e-9
+    assert ema.halflives() == [2500, 500]
+
+
+def test_ema_여러_반감기는_서로_독립이다():
+    ds = toy_dataset(300)
+    a, b, c = _fresh(), _fresh(), _fresh()
+    both = EmaTracker(a, [2, 9])
+    only2, only9 = EmaTracker(b, [2]), EmaTracker(c, [9])
+    cfg = TrainConfig(epochs=2, batch_size=128, seed=1)
+    train_epochs(a, ds, cfg, ema=both)
+    train_epochs(b, ds, cfg, ema=only2)
+    train_epochs(c, ds, cfg, ema=only9)
+    assert _same(both.avg[2], only2.avg[2]) and _same(both.avg[9], only9.avg[9])
+
+
+def test_ema_는_걸음_수를_센다():
+    ds = toy_dataset(512)                      # 에폭당 4 걸음
+    net = _fresh()
+    ema = EmaTracker(net, [5])
+    out = train_epochs(net, ds, TrainConfig(epochs=3, batch_size=128), ema=ema)
+    assert ema.updates == out["updates"] == 12
+
+
+def test_ema_는_max_updates_에서_같이_멈춘다():
+    ds = toy_dataset(512)
+    net = _fresh()
+    ema = EmaTracker(net, [5])
+    out = train_epochs(net, ds, TrainConfig(epochs=5, batch_size=128, max_updates=6), ema=ema)
+    assert ema.updates == out["updates"] == 6
+
+
+def test_ema_반감기가_길수록_처음_가중치에_가깝다():
+    ds = toy_dataset(512)
+    net = _fresh()
+    p0 = _params(net)
+    ema = EmaTracker(net, [1, 1000])
+    train_epochs(net, ds, TrainConfig(epochs=5, batch_size=128), ema=ema)
+
+    def dist(sd):
+        return sum(float((sd[k] - p0[k]).pow(2).sum()) for k in p0)
+
+    assert dist(ema.avg[1000]) < dist(ema.avg[1])
+    assert dist(ema.avg[1000]) > 0.0
+
+
+@pytest.mark.parametrize("bad", [[], [0], [-1], [2, 2], [1.5], [True]])
+def test_ema_잘못된_반감기는_거부한다(bad):
+    with pytest.raises(ValueError, match="halflife|halflives"):
+        EmaTracker(_fresh(), bad)
+
+
+def test_averaged_는_새_그물이고_원본을_안_바꾼다():
+    ds = toy_dataset(300)
+    net = _fresh()
+    ema = EmaTracker(net, [4])
+    train_epochs(net, ds, TrainConfig(epochs=2, batch_size=128), ema=ema)
+    before = _params(net)
+    avg_net = ema.averaged(4, net)
+    assert avg_net is not net and isinstance(avg_net, DrivePolicy)
+    assert avg_net.cfg == net.cfg
+    assert _same(_params(avg_net), ema.avg[4])
+    assert _same(_params(net), before)
+    with torch.no_grad():
+        next(avg_net.parameters()).add_(1.0)       # 돌려받은 그물을 고쳐도 트래커 평균은 그대로
+    assert not _same(_params(avg_net), ema.avg[4])

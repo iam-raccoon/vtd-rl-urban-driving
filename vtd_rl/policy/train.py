@@ -90,6 +90,59 @@ def make_reference(net):
     return ref
 
 
+class EmaTracker:
+    """가중치 지수이동평균(EMA) — 학습 궤적 끝의 흔들림을 평균으로 누른다(M4u).
+
+    `train_epochs(..., ema=tracker)` 가 옵티마이저 걸음마다(`clamp_log_std` 뒤) `update(net)` 을
+    부른다. 반감기는 **걸음 수**다 — `decay = 0.5 ** (1 / halflife)` 라 halflife 걸음 전 가중치의
+    몫이 절반이 된다. 여러 반감기를 한 학습에서 같이 잰다.
+
+    ★ 학습 그물을 **읽기만** 한다. 난수도 옵티마이저도 안 건드리므로, 같은 배치 시드면 학습
+    그물의 가중치는 EMA 를 켜든 끄든 비트 단위로 같다 — M4t 의 재현 관문이 그대로 쓰인다.
+    평균은 출발 가중치에서 시작한다.
+    """
+
+    def __init__(self, net, halflives):
+        hs = list(halflives)
+        if not hs:
+            raise ValueError("halflives 가 비었다 — EMA 를 안 쓰려면 트래커를 안 넘기면 된다")
+        for h in hs:
+            if isinstance(h, bool) or not isinstance(h, int) or h <= 0:
+                raise ValueError(f"halflife 는 양의 정수(걸음 수)여야 한다 — {h!r}")
+        if len(set(hs)) != len(hs):
+            raise ValueError(f"halflives 에 같은 값이 있다 — {hs}")
+        self.decay = {h: 0.5 ** (1.0 / h) for h in hs}
+        with torch.no_grad():
+            self.avg = {h: {k: v.detach().clone() for k, v in net.state_dict().items()}
+                        for h in hs}
+        self.updates = 0
+
+    @torch.no_grad()
+    def update(self, net):
+        sd = net.state_dict()
+        for h, d in self.decay.items():
+            for k, a in self.avg[h].items():
+                if a.is_floating_point():
+                    a.mul_(d).add_(sd[k], alpha=1.0 - d)
+                else:                        # 정수 버퍼는 평균이 뜻이 없다 — 그대로 따라간다
+                    a.copy_(sd[k])
+        self.updates += 1
+
+    def halflives(self) -> list:
+        return list(self.decay)
+
+    def averaged(self, h, like):
+        """반감기 `h` 의 평균 가중치를 실은 **새** 그물 — `like` 의 설정·장치를 따른다.
+
+        `like` 는 안 바뀐다. `load_state_dict` 가 값을 복사하므로 돌려받은 그물을 고쳐도
+        트래커의 평균은 그대로다.
+        """
+        net = copy.deepcopy(like)
+        net.load_state_dict(self.avg[h])
+        net.eval()
+        return net
+
+
 def _check_reference(net, ref):
     """참조가 학생과 파라미터를 공유하면 앵커가 아무것도 안 묶는다 — 거부한다."""
     if ref is net:
@@ -237,7 +290,7 @@ def policy_loss(net, batch, cfg: TrainConfig, ref=None):
 
 
 def train_epochs(net, dataset, cfg: TrainConfig = TrainConfig(), device=None, log=None,
-                 ref=None) -> dict:
+                 ref=None, ema=None) -> dict:
     """`ref` 를 주면 배치마다 그대로 넘긴다 — 앵커는 `cfg.anchor_coef > 0` 일 때만 켜진다.
 
     참조는 옵티마이저에 **안 들어간다**(`net.parameters()` 만 넘긴다) — 참조가 같이 학습되면
@@ -245,6 +298,9 @@ def train_epochs(net, dataset, cfg: TrainConfig = TrainConfig(), device=None, lo
 
     `cfg.max_updates` 를 주면 걸음 수가 거기 닿는 순간 멈춘다. 끊긴 에폭도 `log` 에 한 번
     기록하고, 그 에폭의 평균은 실제로 돈 배치 수로 낸다. 반환값 `updates` 가 실제 걸음 수다.
+
+    `ema`(`EmaTracker`)를 주면 걸음마다 `clamp_log_std` 뒤에 평균을 갱신한다. 학습 그물은
+    읽기만 하므로 안 주었을 때와 가중치가 같다.
     """
     if cfg.max_updates is not None and cfg.max_updates <= 0:
         raise ValueError(f"max_updates 는 양수거나 None 이어야 한다 — {cfg.max_updates!r}")
@@ -269,6 +325,8 @@ def train_epochs(net, dataset, cfg: TrainConfig = TrainConfig(), device=None, lo
             nn.utils.clip_grad_norm_(net.parameters(), cfg.grad_clip)
             opt.step()
             net.clamp_log_std()      # forward 는 안 자르므로 최적화 한 걸음 뒤 여기서 지킨다
+            if ema is not None:
+                ema.update(net)
             for k in sums:
                 sums[k] += parts[k]
             batches += 1
