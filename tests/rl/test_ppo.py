@@ -1,3 +1,4 @@
+import copy
 import math
 
 import numpy as np
@@ -6,8 +7,10 @@ import torch
 
 from vtd_rl.policy.dataset import DaggerDataset, Shard
 from vtd_rl.policy.encode import OBJ_DIM, OBJ_N, VEC_DIM
+from vtd_rl.policy.train import TrainConfig, anchor_kl, make_reference
 from vtd_rl.rl.buffer import RolloutBuffer
-from vtd_rl.rl.ppo import PPOConfig, dagger_batches, imitation_coef, imitation_loss, ppo_losses, update
+from vtd_rl.rl.ppo import (PPOConfig, anchor_loss, dagger_batches, imitation_coef, imitation_loss,
+                           ppo_losses, update)
 
 
 def filled_buffer(net, n_steps=4, n_envs=2):
@@ -304,3 +307,109 @@ def test_모방_바닥_기본값은_0이라_예전과_같다():
     cfg = PPOConfig(imitation_half_life=1_000_000)
     assert cfg.imitation_floor == 0.0
     assert imitation_coef(10_000_000, cfg) == pytest.approx(0.5 ** 10)
+
+
+def _kl_to(ref, net, buf):
+    """버퍼 상태 전체에서 `KL(ref ‖ net.policy)` — 테스트용 자."""
+    flat = next(iter(buf.batches(10_000, generator=torch.Generator().manual_seed(0))))
+    vec, objs, mask = flat[0], flat[1], flat[2]
+    with torch.no_grad():
+        return anchor_kl(net.policy(vec, objs, mask), ref(vec, objs, mask), TrainConfig()).item()
+
+
+def test_앵커_계수_기본값은_0():
+    assert PPOConfig().anchor_coef == 0.0
+
+
+def test_앵커가_꺼져_있으면_ref를_줘도_예전과_비트단위로_같다(small_ac):
+    torch.manual_seed(0)
+    a = small_ac()
+    b = copy.deepcopy(a)
+    buf = filled_buffer(a, n_steps=8, n_envs=4)
+    opt_a = torch.optim.Adam(a.parameters(), lr=1e-2)
+    opt_b = torch.optim.Adam(b.parameters(), lr=1e-2)
+    cfg = PPOConfig(epochs=2, minibatch=8)
+    out_a = update(a, opt_a, buf, None, cfg, step=0, generator=torch.Generator().manual_seed(0))
+    out_b = update(b, opt_b, buf, None, cfg, step=0, generator=torch.Generator().manual_seed(0),
+                   ref=make_reference(b.policy))
+    for (name, pa), (_n, pb) in zip(a.named_parameters(), b.named_parameters()):
+        assert torch.equal(pa, pb), name
+    assert out_a["anchor"] == 0.0 and out_b["anchor"] == 0.0
+
+
+def test_앵커를_켰는데_ref가_없으면_거부한다(small_ac):
+    net = small_ac()
+    buf = filled_buffer(net)
+    opt = torch.optim.Adam(net.parameters(), lr=1e-3)
+    with pytest.raises(ValueError, match="ref"):
+        update(net, opt, buf, None, PPOConfig(anchor_coef=0.5), step=0,
+               generator=torch.Generator().manual_seed(0))
+
+
+def test_ref가_학생_정책과_같은_객체면_거부한다(small_ac):
+    net = small_ac()
+    buf = filled_buffer(net)
+    opt = torch.optim.Adam(net.parameters(), lr=1e-3)
+    with pytest.raises(ValueError):
+        update(net, opt, buf, None, PPOConfig(anchor_coef=0.5), step=0,
+               generator=torch.Generator().manual_seed(0), ref=net.policy)
+
+
+def test_앵커는_처음에_0이고_ref는_움직이지_않는다(small_ac):
+    net = small_ac()
+    ref = make_reference(net.policy)
+    before = {k: v.clone() for k, v in ref.state_dict().items()}
+    buf = filled_buffer(net)
+    opt = torch.optim.Adam(net.parameters(), lr=1e-2)
+    # 미니배치 하나·에폭 하나 — 첫(유일한) 미니배치는 학생 == 참조라 KL 이 0 이다.
+    out = update(net, opt, buf, None, PPOConfig(anchor_coef=1.0, epochs=1, minibatch=1000), step=0,
+                 generator=torch.Generator().manual_seed(0), ref=ref)
+    assert abs(out["anchor"]) < 1e-6
+    for k, v in ref.state_dict().items():
+        assert torch.equal(v, before[k]), k
+    assert all(p.grad is None for p in ref.parameters())
+
+
+def test_앵커_손실이_실제로_loss에_합산된다(small_ac, monkeypatch):
+    net = small_ac()
+    dummy = torch.nn.Parameter(torch.tensor(0.0))
+    opt = torch.optim.SGD(list(net.parameters()) + [dummy], lr=0.0)   # lr=0: 이동 없이 grad 만 본다
+
+    def fake_anchor_loss(_net, _batch, _ref):
+        return dummy * 3.0
+
+    monkeypatch.setattr("vtd_rl.rl.ppo.anchor_loss", fake_anchor_loss)
+    buf = filled_buffer(net)
+    update(net, opt, buf, None, PPOConfig(anchor_coef=0.5, epochs=1, minibatch=1000), step=0,
+           generator=torch.Generator().manual_seed(0), ref=make_reference(net.policy))
+    assert dummy.grad is not None and abs(dummy.grad.item() - 1.5) < 1e-6   # 3.0 × 계수 0.5
+
+
+def test_앵커가_출발점_근처에_붙잡는다(small_ac):
+    torch.manual_seed(0)
+    start = small_ac()
+    buf = filled_buffer(start, n_steps=16, n_envs=8)
+    kls = {}
+    for coef in (0.0, 10.0):
+        net = copy.deepcopy(start)
+        ref = make_reference(start.policy)
+        opt = torch.optim.Adam(net.parameters(), lr=1e-2)
+        cfg = PPOConfig(anchor_coef=coef, epochs=4, minibatch=32, target_kl=1e9)   # 조기 종료 없이
+        for k in range(5):
+            update(net, opt, buf, None, cfg, step=0, generator=torch.Generator().manual_seed(k),
+                   ref=ref if coef > 0 else None)
+        kls[coef] = _kl_to(ref, net, buf)
+    assert kls[0.0] > 1e-3                 # 앵커가 없으면 실제로 멀어진다(공허한 테스트가 아님)
+    assert kls[10.0] < 0.5 * kls[0.0]      # 앵커가 그 거리를 절반 아래로 묶는다
+
+
+def test_anchor_loss는_anchor_kl과_같다(small_ac):
+    net = small_ac()
+    ref = make_reference(net.policy)
+    with torch.no_grad():
+        net.policy.mean.weight.add_(0.1)   # 학생만 조금 옮긴다
+    buf = filled_buffer(net)
+    batch = next(iter(buf.batches(1000, generator=torch.Generator().manual_seed(0))))
+    got = anchor_loss(net, batch, ref).item()
+    want = _kl_to(ref, net, buf)
+    assert got > 0.0 and abs(got - want) < 1e-5

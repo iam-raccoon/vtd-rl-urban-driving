@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
-from vtd_rl.policy.train import TrainConfig, policy_loss
+from vtd_rl.policy.train import TrainConfig, _check_reference, anchor_kl, policy_loss
 
 
 @dataclass(frozen=True)
@@ -34,6 +34,10 @@ class PPOConfig:
     # (progress 100 · goal 50 · collision -50, 보상 정규화 없음, 스펙 §5)인데 비율용 0.2 를
     # 그대로 재사용하면 비평가 수렴이 대략 4 배 느려진다(갱신 50 회에 V=63.8 vs 무클립 100.0).
     value_clip: float = 10.0
+    # M6b — 얼린 출발 정책과의 `KL(ref ‖ net)` 계수(모방학습 M4m 과 같은 식). 0 이면 꺼짐 —
+    # `update()` 가 참조를 받아도 추가 연산이 하나도 없어 예전과 비트 단위로 같다.
+    # M6a: 앵커 없이 돌리자 25 만 걸음 만에 KL 이 1.4~1.8 로 벌어져 정지차 회피를 잃었다.
+    anchor_coef: float = 0.0
 
 
 # 모방 손실은 매 미니배치 M3 학습 설정을 그대로 쓴다 — 새로 만들 이유가 없어 모듈 상수로 뺀다.
@@ -41,6 +45,25 @@ _IMITATION_TRAIN_CFG = TrainConfig()
 # M4b: 평균은 선생님에 묶어 두고 σ 만 푸는 짝 — sigma_grad 만 다르다.
 _IMITATION_TRAIN_CFG_DETACH = dataclasses.replace(_IMITATION_TRAIN_CFG, sigma_grad=False)
 _IMITATION_CFGS = {"learn": _IMITATION_TRAIN_CFG, "detach": _IMITATION_TRAIN_CFG_DETACH}
+# 앵커 KL 의 지시등 균형 — 모방학습 앵커(`policy_loss`)와 같은 `TrainConfig().turn_weight` 를 쓴다.
+_ANCHOR_TRAIN_CFG = TrainConfig()
+
+
+def anchor_loss(net, batch, ref):
+    """PPO 미니배치의 **상태**에서 `KL(ref ‖ net.policy)` — 계수는 안 곱한다.
+
+    상태는 롤아웃에서 정책이 실제로 간 곳이다(모방 데이터가 아니다) — PPO 가 옮기는 곳에서
+    붙잡는다. 식은 `vtd_rl.policy.train.anchor_kl` 그대로다(방향·σ·스쿼시 논의는 그 독스트링).
+    `ref` 는 `make_reference(net.policy)` 로 만든 얼린 사본이어야 한다 — 같은 객체·공유
+    파라미터면 `_check_reference` 가 `ValueError` 를 낸다. `ref.log_std` 는 Parameter 를 그대로
+    돌려받으므로 `no_grad` 와 별도로 떼어야 참조에 기울기가 안 쌓인다(`policy_loss` 와 같은 함정).
+    """
+    vec, objs, mask = batch[0], batch[1], batch[2]
+    _check_reference(net.policy, ref)
+    with torch.no_grad():
+        ref_mean, ref_log_std, ref_logits = ref(vec, objs, mask)
+    return anchor_kl(net.policy(vec, objs, mask), (ref_mean, ref_log_std.detach(), ref_logits),
+                     _ANCHOR_TRAIN_CFG)
 
 
 def imitation_train_cfg(net, cfg: PPOConfig) -> TrainConfig:
@@ -117,13 +140,19 @@ def dagger_batches(dataset, batch_size: int, generator=None, device=None):
             yield batch
 
 
-def update(net, opt, buffer, dagger_iter, cfg: PPOConfig, step: int, generator=None) -> dict:
+def update(net, opt, buffer, dagger_iter, cfg: PPOConfig, step: int, generator=None, ref=None) -> dict:
     """에폭을 반복하며 PPO 손실 + 모방 손실(감쇠)을 합쳐 한 걸음씩 최적화한다.
 
     최적화 한 걸음마다 `net.clamp_log_std()` 를 불러 표준편차 범위를 지킨다(M3 가 σ 붕괴로
     학생이 브레이크만 밟았던 실패를 되풀이하지 않는다). `approx_kl` 이 `target_kl` 을 넘으면
     그 에폭에서 바로 멈춘다.
+
+    `cfg.anchor_coef > 0` 이면 미니배치마다 `anchor_coef * anchor_loss(net, batch, ref)` 를 더한다
+    (M6b). 계수를 켰는데 `ref` 가 없으면 앵커가 조용히 꺼지므로 거부한다.
     """
+    if cfg.anchor_coef > 0.0 and ref is None:
+        raise ValueError("anchor_coef > 0 인데 ref 가 없다 — 앵커가 조용히 꺼진다."
+                         " `make_reference(net.policy)` 로 얼린 참조를 넘겨라.")
     coef = imitation_coef(step, cfg)
     sums, count = {}, 0
     for _epoch in range(cfg.epochs):
@@ -136,6 +165,11 @@ def update(net, opt, buffer, dagger_iter, cfg: PPOConfig, step: int, generator=N
                 imi, iparts = imitation_loss(net, dbatch, cfg)
                 loss = loss + coef * imi
                 parts["imitation"] = iparts["total"]
+            parts["anchor"] = 0.0
+            if cfg.anchor_coef > 0.0:
+                anc = anchor_loss(net, batch, ref)
+                loss = loss + cfg.anchor_coef * anc
+                parts["anchor"] = float(anc.item())
             opt.zero_grad(set_to_none=True)
             loss.backward()
             nn.utils.clip_grad_norm_(net.parameters(), cfg.max_grad_norm)
