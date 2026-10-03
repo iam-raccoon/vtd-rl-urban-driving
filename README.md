@@ -123,6 +123,7 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 - [docs/reports/m5c-ratio.md](docs/reports/m5c-ratio.md) — 구성비가 아니라 **갱신 횟수**였다: 전 라운드 두 배 · 8 에폭 53.6% → 갱신을 M4y 와 같게 묶으면 67.5%(선택 창) · 데이터를 늘려도 기준(70.8%)을 못 넘는다
 - [docs/reports/m5d-epochs.md](docs/reports/m5d-epochs.md) — 학습 길이 곡선은 산 모양(2·4·6·8·12 에폭 = 33 · 69 · 73 · 66 · 63%)이지만 6 에폭도 미리 적은 문턱(4/5 시드)을 못 넘는다 → 이 설정은 평탄한 구간
 - [docs/reports/m5e-scorecard.md](docs/reports/m5e-scorecard.md) — **현재 최고 그물 종합 성적(보고 창)**: ① 100% · 98.5 / ② 100% · 93.8 / ③a 74.7% / ③b 65.8% / ③ 전체 3.6%(출발점 0%, 총걸음 2 배)
+- [docs/reports/m6a-ppo-probe.md](docs/reports/m6a-ppo-probe.md) — 정지차 단계 PPO 탐침: **앵커 없는 PPO 는 배운 회피를 무너뜨린다**(선택 창 ③b 68.5 → 48.1%, 25 만~50 만 걸음 안에 무너짐) → 다음은 KL 앵커
 
 ### 여기까지 온 곳
 **PPO 는 M3 모방 학생을 한 번도 못 넘었다 — 학습의 어느 시점에서도.** 목표 판정은 M4a 부터 지금까지
