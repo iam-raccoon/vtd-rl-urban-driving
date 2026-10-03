@@ -113,6 +113,7 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 - [docs/reports/m4s-select-beta.md](docs/reports/m4s-select-beta.md) — **★ β 를 0.5 에서 멈추자 시드 다섯 모두 정지차 통과**(안 쓴 판 평균 37.8%, 30.6~43.1%) · 효과는 β 덕이고 선택 창은 같은 라운드를 골랐다
 - [docs/reports/m4t-r4-drop.md](docs/reports/m4t-r4-drop.md) — r4 하락은 **운**이었다: 데이터·갱신 횟수를 바꿔 다시 학습한 그물 60 개 중 정지차 성공 23 개(38%), 원본 r3·r4 는 가중치까지 재현 · M4s 의 5/5 는 라운드 선택이 만든 것
 - [docs/reports/m4u-ema.md](docs/reports/m4u-ema.md) — 가중치 평균(EMA)은 배치 시드 흔들림을 없애지만(표준편차 7.0 → 0.5 점) 평균은 그대로(③b 16%) · 흔들림은 궤적 끝 잡음이었고 선택이 그 꼬리를 고른다 · 평가는 CPU 로(GPU 와 걸음 수까지 같음)
+- [docs/reports/m4v-ema-grid.md](docs/reports/m4v-ema-grid.md) — **★ 회피 표본 가중 4 배(30 m 안): 평균 그물의 정지차 통과 16% → 60%**(선택 창 EMA), raw 15/15 성공 · 안 쓴 판(보고 창)에서 EMA 55.5% · 고르지 않은 그물이 M4s 의 고른 그물(37.8%)보다 낫다
 
 ### 여기까지 온 곳
 **PPO 는 M3 모방 학생을 한 번도 못 넘었다 — 학습의 어느 시점에서도.** 목표 판정은 M4a 부터 지금까지
