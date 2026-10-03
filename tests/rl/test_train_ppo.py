@@ -927,18 +927,25 @@ def test_앵커_계수_인자가_cfg에_닿는다():
     assert mod._build_cfg(b).anchor_coef == 0.0
 
 
-def test_앵커는_init_없이_거부한다():
-    """무작위 시작점에 묶는 것은 뜻이 없다 — 무거운 준비(venv·모델) 전에 argparse 오류로 죽는다."""
+def test_앵커는_init_없이_거부한다(capsys):
+    """무작위 시작점에 묶는 것은 뜻이 없다 — 무거운 준비(venv·모델) 전에 argparse 오류로 죽는다.
+
+    `SystemExit` 만 보면 플래그가 아예 없을 때(`unrecognized arguments`)도 통과한다 — 구현 전후를
+    못 가른다(Task 2 구현 보고). 그래서 **우리 검증의 오류 문구**가 stderr 에 찍혔는지까지 본다.
+    """
     import sys
     mod = _load_train_ppo_module()
     old_argv = sys.argv
     try:
-        for bad in (["train_ppo.py", "--smoke", "--out", "/tmp/불필요-존재안함", "--anchor-coef", "0.5"],
-                    ["train_ppo.py", "--smoke", "--out", "/tmp/불필요-존재안함", "--init", "x.pt",
-                     "--anchor-coef", "-1"]):
+        for bad, msg in ((["train_ppo.py", "--smoke", "--out", "/tmp/불필요-존재안함", "--anchor-coef", "0.5"],
+                          "--init 이 있어야 한다"),
+                         (["train_ppo.py", "--smoke", "--out", "/tmp/불필요-존재안함", "--init", "x.pt",
+                           "--anchor-coef", "-1"],
+                          "0 이상이어야 한다")):
             sys.argv = bad
             with pytest.raises(SystemExit):
                 mod.main()
+            assert msg in capsys.readouterr().err
     finally:
         sys.argv = old_argv
 
