@@ -110,6 +110,15 @@ def test_load_upto_는_그때_폴더를_load_dir_로_읽은_것과_같다(rr, tm
     assert all(np.array_equal(x, y) for x, y in zip(a, b))
 
 
+def test_count_upto_는_배열을_안_읽고_load_upto_의_길이와_같다(rr, tmp_path):
+    run = _fake_run(tmp_path, rounds=3)
+    for upto in (0, 1, 2):
+        assert rr.count_upto(str(run / "data"), upto) == len(rr.load_upto(str(run / "data"), upto))
+    assert rr.count_upto(str(run / "data"), 1) == 2 * 2 * 40
+    with pytest.raises(ValueError, match="라운드 3"):         # 조각 고르기 규칙을 그대로 쓴다
+        rr.count_upto(str(run / "data"), 3)
+
+
 # ── 예산 산수 ────────────────────────────────────────────────────────────────
 
 def test_예산_산수(rr):
@@ -220,6 +229,15 @@ def test_main_이_row_json_과_체크포인트를_쓴다(rr, tmp_path, monkeypat
     assert row["eval"]["stage3b"]["window"] == "v8~v11"
     assert row["eval"]["stage3b"]["episodes"] == 4 * 3
     assert row["compare"] is None
+    assert not os.path.exists(out / "row.json.tmp")     # 원자적 쓰기 — 임시 파일이 안 남는다
+    # 어느 창을 쟀는지 잠근다 — 선택 창 v8~v11 · 시드 0~2, 액터 없는 단계는 원본 한 판
+    assert len(calls) == 2
+    stage1_boards, stage1_seeds = calls[0]
+    stage3b_boards, stage3b_seeds = calls[1]
+    assert len(stage1_boards) == 1 and stage1_seeds == (0, 1, 2)
+    assert stage3b_boards == ["stage3b.json@v8", "stage3b.json@v9",
+                              "stage3b.json@v10", "stage3b.json@v11"]
+    assert stage3b_seeds == (0, 1, 2)
 
 
 def test_예산이_8에폭보다_크면_에폭을_늘려_예산을_채운다(rr, tmp_path, monkeypatch):
@@ -237,6 +255,21 @@ def test_예산이_8에폭보다_크면_에폭을_늘려_예산을_채운다(rr,
     assert row["epochs"] == 13                         # ceil(64 / 5)
     assert row["train"]["updates"] == 64
     assert row["eval"] is None
+
+
+def test_예산을_못_채우면_1_을_돌려주고_아무것도_안_쓴다(rr, tmp_path, monkeypatch):
+    run = _fake_run(tmp_path, rounds=3, n=300)
+    init = _init_ckpt(tmp_path)
+    _fake_eval(monkeypatch, rr, [])
+    out = tmp_path / "out"
+    # 에폭을 늘리는 보정을 끈다 — D 조건 모양(1 에폭 × 5 배치 = 5 걸음 < 예산 1 × 8 = 8)이 못 채운다
+    monkeypatch.setattr(rr, "effective_epochs", lambda epochs, max_updates, n, bs: epochs)
+    rc = _main(rr, ["--run", str(run), "--upto", "1", "--init", init, "--anchor-coef", "0",
+                    "--batch-seed", "1", "--updates-like", "2", "--epochs", "1", "--out", str(out),
+                    "--device", "cpu", "--no-eval"])
+    assert rc == 1
+    assert not os.path.exists(out / "row.json")
+    assert not os.path.exists(out / "policy.pt")
 
 
 def test_updates_like_가_더_작으면_중간에_멈춘다(rr, tmp_path, monkeypatch):
@@ -289,6 +322,26 @@ def test_max_updates_와_updates_like_는_같이_못_준다(rr, tmp_path):
         _main(rr, ["--run", str(tmp_path), "--upto", "1", "--init", "x", "--anchor-coef", "0",
                    "--batch-seed", "0", "--out", str(tmp_path / "o"), "--max-updates", "5",
                    "--updates-like", "0"])
+    assert e.value.code == 2
+
+
+@pytest.mark.parametrize("dry", [False, True])
+def test_없는_init_은_데이터를_읽기_전에_거부한다(rr, tmp_path, dry):
+    run = _fake_run(tmp_path, rounds=2)
+    with pytest.raises(SystemExit) as e:
+        _main(rr, ["--run", str(run), "--upto", "1", "--init", str(tmp_path / "없음.pt"),
+                   "--anchor-coef", "0", "--batch-seed", "0", "--out", str(tmp_path / "o"),
+                   "--device", "cpu", "--no-eval"] + (["--dry-run"] if dry else []))
+    assert e.value.code == 2
+
+
+def test_없는_compare_는_dry_run_에서도_거부한다(rr, tmp_path):
+    run = _fake_run(tmp_path, rounds=2)
+    init = _init_ckpt(tmp_path)
+    with pytest.raises(SystemExit) as e:
+        _main(rr, ["--run", str(run), "--upto", "1", "--init", init, "--anchor-coef", "0",
+                   "--batch-seed", "0", "--out", str(tmp_path / "o"), "--device", "cpu",
+                   "--compare", str(tmp_path / "없음.pt"), "--dry-run"])
     assert e.value.code == 2
 
 

@@ -34,6 +34,7 @@ import re
 import sys
 import time
 
+import numpy as np
 import torch
 
 REPO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
@@ -83,6 +84,19 @@ def load_upto(data_dir: str, upto: int) -> DaggerDataset:
     for p in shard_paths(data_dir, upto):
         ds.add(load_shard(p))
     return ds
+
+
+def count_upto(data_dir: str, upto: int) -> int:
+    """라운드 ≤ `upto` 조각의 표본 수 — 배열을 **읽지 않고** 센다(`len(load_upto(...))` 와 같다).
+
+    npz 는 항목마다 늦게 읽으므로 `turn` 의 길이만 본다. `--updates-like` 예산에 데이터셋을
+    통째로 올리면 학습 데이터와 겹쳐 메모리 최고점이 커진다.
+    """
+    n = 0
+    for p in shard_paths(data_dir, upto):
+        with np.load(p, allow_pickle=False) as z:
+            n += int(z["turn"].shape[0])
+    return n
 
 
 def batches_per_epoch(n: int, batch_size: int) -> int:
@@ -217,6 +231,11 @@ def parse(argv):
             stage_path(s)
     except ValueError as exc:
         ap.error(str(exc))
+    # 오타는 데이터를 올리기 전에, --dry-run 에서도 잡는다
+    if not os.path.exists(a.init):
+        ap.error(f"--init 체크포인트가 없다: {a.init}")
+    if a.compare and not os.path.exists(a.compare):
+        ap.error(f"--compare 체크포인트가 없다: {a.compare}")
     if not a.dry_run and os.path.exists(os.path.join(a.out, "row.json")):
         ap.error(f"`{a.out}/row.json` 이 이미 있다 — 다른 실행과 섞인다. 지우거나 다른 --out")
     return ap, a
@@ -225,16 +244,14 @@ def parse(argv):
 def main(argv=None) -> int:
     ap, a = parse(argv)
     data_dir = os.path.join(a.run, "data")
+    bs = TrainConfig().batch_size
     try:
-        dataset = load_upto(data_dir, a.upto)
         max_updates = a.max_updates
-        if a.updates_like is not None:
-            like = load_upto(data_dir, a.updates_like)
-            max_updates = budget(len(like), a.epochs, TrainConfig().batch_size)
-            del like
+        if a.updates_like is not None:      # 길이만 센다 — 데이터셋을 둘 올리지 않는다
+            max_updates = budget(count_upto(data_dir, a.updates_like), a.epochs, bs)
+        dataset = load_upto(data_dir, a.upto)
     except ValueError as exc:
         ap.error(str(exc))
-    bs = TrainConfig().batch_size
     epochs = effective_epochs(a.epochs, max_updates, len(dataset), bs)
     win = window_label(a.window_variants, a.window_offset)
     if a.dry_run:
@@ -246,8 +263,6 @@ def main(argv=None) -> int:
         print(f"평가: {'안 함' if a.no_eval else f'{win} · 단계 {a.eval_stage} · 평가 시드 {a.eval_seeds}'}")
         print(f"비교: {a.compare or '없음'} · 출력: {a.out}")
         return 0
-    if a.compare and not os.path.exists(a.compare):
-        ap.error(f"--compare 체크포인트가 없다: {a.compare}")
 
     dev = pick_device(a.device)
     t0 = time.perf_counter()
@@ -256,6 +271,8 @@ def main(argv=None) -> int:
     samples = len(dataset)
     del dataset
     gc.collect()                 # 평가 전에 데이터를 놓는다 — 병렬 갈래가 메모리를 나눠 쓴다
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()  # GPU 쪽도 같이 — 학습 때 잡은 캐시를 평가 전에 돌려준다
     if max_updates is not None and train["updates"] != max_updates:
         print(f"★ 예산 {max_updates} 걸음을 못 채웠다(실제 {train['updates']})", file=sys.stderr)
         return 1
@@ -270,8 +287,12 @@ def main(argv=None) -> int:
                                          a.window_offset, a.eval_seeds)
     row = build_row(a, samples, max_updates, epochs, train, compare, ev,
                     time.perf_counter() - t0, dev)
-    with open(os.path.join(a.out, "row.json"), "w", encoding="utf-8") as f:
+    # 병렬 실행기는 row.json 이 있으면 "끝났다" 로 본다 — 쓰다 죽어도 반쪽짜리가 남지 않게
+    # 같은 폴더의 임시 파일에 쓴 뒤 한 번에 바꿔 놓는다
+    row_path = os.path.join(a.out, "row.json")
+    with open(row_path + ".tmp", "w", encoding="utf-8") as f:
         json.dump(row, f, ensure_ascii=False, indent=1)
+    os.replace(row_path + ".tmp", row_path)
     print(json.dumps({k: row[k] for k in ("upto", "batch_seed", "epochs", "max_updates")}
                      | {"updates": train["updates"], "anchor": train["anchor"],
                         "identical": None if compare is None else compare["identical"]},
