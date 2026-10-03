@@ -40,7 +40,7 @@ from vtd_rl.policy import device as pick_device  # noqa: E402
 from vtd_rl.policy.dataset import load_dir  # noqa: E402
 from vtd_rl.policy.evaluate import evaluate_policy, evaluate_teacher, violation_counts  # noqa: E402
 from vtd_rl.policy.net import ENTROPY_MODES  # noqa: E402
-from vtd_rl.policy.train import TrainConfig  # noqa: E402
+from vtd_rl.policy.train import TrainConfig, make_reference  # noqa: E402
 from vtd_rl.rl.actor_critic import ActorCritic  # noqa: E402
 from vtd_rl.rl.buffer import RolloutBuffer  # noqa: E402
 from vtd_rl.rl.diagnostics import (ActionBoxTracker, OutcomeCounter, ReturnTracker,  # noqa: E402
@@ -241,6 +241,10 @@ def _build_parser() -> argparse.ArgumentParser:
                          "(바닥 없음). M4e — 출발점은 결정적으로 18/18 완주하는데 앵커가"
                          " 사라지며 무너진다; 작은 바닥을 남겨 평균을 배포 가능한 곳에 계속"
                          " 붙들어 두는 실험이다.")
+    ap.add_argument("--anchor-coef", type=float, default=default_cfg.anchor_coef,
+                    help="M6b — 얼린 출발 정책(--init)과의 KL(ref‖net) 계수. 기본값 0.0 은 지금과"
+                         " 같다(꺼짐). M6a 에서 앵커 없는 PPO 가 25 만 걸음 만에 KL 1.4~1.8 로"
+                         " 멀어져 정지차 회피를 잃었다. --init 이 있어야 한다.")
     ap.add_argument("--entropy-mode", choices=ENTROPY_MODES, default=None,
                     help="정책의 entropy_mode(net.py PolicyConfig 참고)를 덮어쓴다. 기본값"
                          " None 은 체크포인트에 저장된 값을 그대로 쓴다(--init 이 없으면"
@@ -284,18 +288,20 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _build_cfg(a) -> PPOConfig:
-    """`PPOConfig` 는 frozen dataclass 라 `dataclasses.replace` 로 CLI 로 연 **여섯** 필드만 덮어쓴다.
+    """`PPOConfig` 는 frozen dataclass 라 `dataclasses.replace` 로 CLI 로 연 **일곱** 필드만 덮어쓴다.
 
-    `lr`·`entropy_coef`·`target_kl`·`imitation_half_life`·`imitation_sigma`·`imitation_floor`.
-    인자를 하나도 안 주면 이 여섯이 전부 `PPOConfig()` 자신의 기본값이므로(위 `_build_parser`
-    참고) 이 함수가 만드는 `cfg` 는 `PPOConfig()` 와 완전히 같다 — 기본 동작이 안 바뀐다.
+    `lr`·`entropy_coef`·`target_kl`·`imitation_half_life`·`imitation_sigma`·`imitation_floor`·
+    `anchor_coef`. 인자를 하나도 안 주면 이 일곱이 전부 `PPOConfig()` 자신의 기본값이므로
+    (위 `_build_parser` 참고) 이 함수가 만드는 `cfg` 는 `PPOConfig()` 와 완전히 같다 — 기본
+    동작이 안 바뀐다.
 
     (2026-09-29 리뷰: "네 필드" 로 적혀 있었다 — `imitation_sigma` 가 늘 때부터 낡았고
      `imitation_floor` 가 늘 때도 안 고쳤다. 필드를 더하면 이 줄도 같이 고쳐야 한다.)
     """
     return dataclasses.replace(PPOConfig(), lr=a.lr, entropy_coef=a.entropy_coef,
                                target_kl=a.target_kl, imitation_half_life=a.imitation_half_life,
-                               imitation_sigma=a.imitation_sigma, imitation_floor=a.imitation_floor)
+                               imitation_sigma=a.imitation_sigma, imitation_floor=a.imitation_floor,
+                               anchor_coef=a.anchor_coef)
 
 
 def _build_reward_cfg(a) -> RewardConfig:
@@ -393,6 +399,10 @@ def main():
         ap.error("--steps 는 1 이상이어야 한다")
     if a.eval_every < 1:
         ap.error("--eval-every 는 1 이상이어야 한다(0 이면 while next_eval<=step 이 안 끊긴다)")
+    if a.anchor_coef < 0.0:
+        ap.error("--anchor-coef 는 0 이상이어야 한다")
+    if a.anchor_coef > 0.0 and not a.init:
+        ap.error("--anchor-coef 는 --init 이 있어야 한다 — 무작위 시작점에 묶는 것은 뜻이 없다")
     if a.smoke:
         a.envs, a.steps, a.rollout = 2, 4000, 64
         a.eval_seeds, a.final_eval_seeds = 1, 1
@@ -439,6 +449,9 @@ def main():
         net = _apply_entropy_mode(net, a.entropy_mode)   # 두 경로(이식/새로 시작) 모두 여기 합류한 뒤 지난다
         net = _apply_log_std_max(net, a.log_std_max)     # M4d — σ 상한 개입(결정적 모드 붕괴 원인 분리용)
         ref_state = snapshot_policy(net)   # 드리프트 기준점 — `--init` 로드 직후, 갱신 전
+        # M6b 앵커 참조 — `--init` 로드와 σ·엔트로피 덮어쓰기가 끝난 **뒤**, 갱신 **전**에 얼린다.
+        # 계수가 0 이면 만들지 않는다(`update()` 가 참조를 안 본다).
+        anchor_ref = make_reference(net.policy) if cfg.anchor_coef > 0.0 else None
         opt = _build_optimizer(net, cfg)
         buf = RolloutBuffer(a.rollout, a.envs, dev)
         gen = torch.Generator().manual_seed(a.seed)
@@ -528,7 +541,7 @@ def main():
             for p in net.policy.parameters():
                 p.requires_grad_(not warming)
             stats = update(net, opt, buf, dagger_iter if not warming else None, cfg, step,
-                           generator=gen)
+                           generator=gen, ref=anchor_ref)
             for p in net.policy.parameters():
                 p.requires_grad_(True)
             updates += 1
@@ -563,10 +576,11 @@ def main():
             # `tracker.stats()`(rollout_return_mean/_n·rollout_len_mean)와
             # `terms.stats()`(term_progress_mean/_time_mean/_violation_mean/_comfort_mean/_n)와
             # `policy_drift()`(drift_l2/_rel/_log_std/_rest_rel)는 이름이 서로 겹치지 않고
-            # `stats`(policy/value/entropy/approx_kl/clip_frac/imitation/imitation_coef/updates)
+            # `stats`(policy/value/entropy/approx_kl/clip_frac/imitation/imitation_coef/anchor/updates)
             # 와도 안 겹친다(M4a 에서 `**stats` 가 바깥 `updates` 를 조용히 덮어쓴 적이 있어
-            # 대조해 확인했다). `box.stats()`(act_abs_mean/act_sat_frac/mean_abs_mean, M4c 행동
-            # 상자 진단)도 위 다섯 그룹 어느 키와도 안 겹친다(대조 확인 완료).
+            # 대조해 확인했다). M6b 가 더한 `anchor` 도 다른 그룹 어디에도 같은 이름이 없다(대조
+            # 확인). `box.stats()`(act_abs_mean/act_sat_frac/mean_abs_mean, M4c 행동 상자 진단)도
+            # 위 다섯 그룹 어느 키와도 안 겹친다(대조 확인 완료).
             row = {"step": step, "iter": updates, "elapsed_s": time.perf_counter() - t0,
                    **stats,
                    **tracker.stats(),

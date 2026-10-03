@@ -916,3 +916,49 @@ def test_sigma_anneal이_선형이다_지수가_아니다(tmp_path):
     # 선형이면 2 차 차분이 정확히 0(부동소수 오차만), 지수면 눈에 띄게 크다.
     assert max(abs(x) for x in d2) < 1e-6, (v, d2)
     assert v[0] > v[-1], "어닐링이 내려가지 않았다"
+
+
+def test_앵커_계수_인자가_cfg에_닿는다():
+    mod = _load_train_ppo_module()
+    a = mod._build_parser().parse_args(["--out", "/tmp/불필요-존재안함", "--init", "x.pt",
+                                        "--anchor-coef", "0.3"])
+    assert mod._build_cfg(a).anchor_coef == 0.3
+    b = mod._build_parser().parse_args(["--out", "/tmp/불필요-존재안함"])
+    assert mod._build_cfg(b).anchor_coef == 0.0
+
+
+def test_앵커는_init_없이_거부한다():
+    """무작위 시작점에 묶는 것은 뜻이 없다 — 무거운 준비(venv·모델) 전에 argparse 오류로 죽는다."""
+    import sys
+    mod = _load_train_ppo_module()
+    old_argv = sys.argv
+    try:
+        for bad in (["train_ppo.py", "--smoke", "--out", "/tmp/불필요-존재안함", "--anchor-coef", "0.5"],
+                    ["train_ppo.py", "--smoke", "--out", "/tmp/불필요-존재안함", "--init", "x.pt",
+                     "--anchor-coef", "-1"]):
+            sys.argv = bad
+            with pytest.raises(SystemExit):
+                mod.main()
+    finally:
+        sys.argv = old_argv
+
+
+@pytest.mark.slow
+def test_앵커_스모크가_로그에_KL을_남긴다(tmp_path):
+    from vtd_rl.policy.net import DrivePolicy, PolicyConfig
+    init = tmp_path / "init.pt"
+    DrivePolicy(PolicyConfig(squash=True)).save(str(init))
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    out = subprocess.run([os.path.join(REPO, ".venv", "bin", "python"),
+                          os.path.join(REPO, "scripts", "train_ppo.py"),
+                          "--smoke", "--out", str(tmp_path / "run"), "--seed", "0",
+                          "--init", str(init), "--anchor-coef", "1.0", "--lr", "0.01"],
+                         capture_output=True, text=True, env=env, cwd=REPO, timeout=1800)
+    assert out.returncode == 0, out.stderr[-3000:]
+    with open(tmp_path / "run" / "log.jsonl", encoding="utf-8") as f:
+        rows = [json.loads(line) for line in f if line.strip()]
+    assert rows and all("anchor" in r and math.isfinite(r["anchor"]) and r["anchor"] >= 0.0 for r in rows)
+    assert rows[0]["hparams"]["anchor_coef"] == 1.0
+    # 가치만 배우는 처음 5 갱신(기본 --warmup-updates)이 지나면 정책이 움직여 KL 이 0 보다 커진다.
+    assert max(r["anchor"] for r in rows) > 0.0
