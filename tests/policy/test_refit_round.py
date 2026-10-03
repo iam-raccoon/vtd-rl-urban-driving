@@ -3,6 +3,7 @@
 판을 하나도 안 짓는다. 평가는 `evaluate_policy`·`load_window` 를 가짜로 바꾸고, 학습은
 아주 작은 그물·장난감 조각으로 몇 걸음만 돈다.
 """
+import copy
 import importlib.util
 import json
 import os
@@ -149,8 +150,9 @@ def test_refit_은_run_dagger_와_같은_순서로_학습한다(rr, tmp_path):
     run = _fake_run(tmp_path, rounds=3)
     init = _init_ckpt(tmp_path)
     ds = rr.load_upto(str(run / "data"), 2)
-    net, train = rr.refit(init, ds, upto=2, batch_seed=5, epochs=2, max_updates=None,
-                          anchor_coef=3.0, init_seed=0, dev="cpu")
+    net, train, ema = rr.refit(init, ds, upto=2, batch_seed=5, epochs=2, max_updates=None,
+                               anchor_coef=3.0, init_seed=0, dev="cpu")
+    assert ema is None
 
     # run_dagger.py:952-987 을 손으로 옮긴 것
     ref = make_reference(rr.start_net(init, "cpu"))
@@ -167,12 +169,12 @@ def test_refit_은_run_dagger_와_같은_순서로_학습한다(rr, tmp_path):
 def test_refit_의_배치_시드는_더하지_않고_그대로다(rr, tmp_path):
     run = _fake_run(tmp_path, rounds=2)
     init = _init_ckpt(tmp_path)
-    a, _ = rr.refit(init, rr.load_upto(str(run / "data"), 1), upto=1, batch_seed=4, epochs=1,
-                    max_updates=None, anchor_coef=0.0, init_seed=0, dev="cpu")
-    b, _ = rr.refit(init, rr.load_upto(str(run / "data"), 1), upto=1, batch_seed=5, epochs=1,
-                    max_updates=None, anchor_coef=0.0, init_seed=0, dev="cpu")
-    c, _ = rr.refit(init, rr.load_upto(str(run / "data"), 1), upto=1, batch_seed=4, epochs=1,
-                    max_updates=None, anchor_coef=0.0, init_seed=0, dev="cpu")
+    a, _, _ = rr.refit(init, rr.load_upto(str(run / "data"), 1), upto=1, batch_seed=4, epochs=1,
+                       max_updates=None, anchor_coef=0.0, init_seed=0, dev="cpu")
+    b, _, _ = rr.refit(init, rr.load_upto(str(run / "data"), 1), upto=1, batch_seed=5, epochs=1,
+                       max_updates=None, anchor_coef=0.0, init_seed=0, dev="cpu")
+    c, _, _ = rr.refit(init, rr.load_upto(str(run / "data"), 1), upto=1, batch_seed=4, epochs=1,
+                       max_updates=None, anchor_coef=0.0, init_seed=0, dev="cpu")
     assert not _same(_params(a), _params(b))
     assert _same(_params(a), _params(c))
 
@@ -366,3 +368,130 @@ def test_스크립트를_명령줄로_부를_수_있다(tmp_path):
                         "--dry-run"], capture_output=True, text=True,
                        env={k: v for k, v in os.environ.items() if k != "PYTHONPATH"})
     assert p.returncode == 0, p.stderr
+
+
+# ── M4u: --ema-halflife ──────────────────────────────────────────────────────
+
+def test_ema_반감기를_주면_체크포인트를_따로_쓴다(rr, tmp_path):
+    run = _fake_run(tmp_path, rounds=2)
+    init = _init_ckpt(tmp_path)
+    out = tmp_path / "out"
+    rc = _main(rr, ["--run", str(run), "--upto", "1", "--init", init, "--anchor-coef", "3",
+                    "--batch-seed", "2", "--epochs", "2", "--ema-halflife", "2",
+                    "--ema-halflife", "8", "--out", str(out), "--device", "cpu", "--no-eval"])
+    assert rc == 0
+    row = json.loads((out / "row.json").read_text(encoding="utf-8"))
+    assert set(row["ema"]) == {"2", "8"}
+    for h in ("2", "8"):
+        assert row["ema"][h]["ckpt"] == str(out / f"policy-ema{h}.pt")
+        assert os.path.exists(out / f"policy-ema{h}.pt")
+        assert row["ema"][h]["eval"] is None
+    # 기존 키는 그대로다 — M4t 분석 스크립트가 그대로 읽는다
+    assert {"train", "eval", "compare", "upto", "batch_seed", "samples"} <= set(row)
+    assert row["eval"] is None and row["compare"] is None
+
+
+def test_ema_를_안_주면_row_의_ema_는_None(rr, tmp_path):
+    run = _fake_run(tmp_path, rounds=2)
+    init = _init_ckpt(tmp_path)
+    out = tmp_path / "out"
+    assert _main(rr, ["--run", str(run), "--upto", "1", "--init", init, "--anchor-coef", "0",
+                      "--batch-seed", "0", "--epochs", "1", "--out", str(out), "--device",
+                      "cpu", "--no-eval"]) == 0
+    row = json.loads((out / "row.json").read_text(encoding="utf-8"))
+    assert row["ema"] is None
+    assert not [f for f in os.listdir(out) if f.startswith("policy-ema")]
+
+
+def test_ema_를_켜도_원래_그물은_같다(rr, tmp_path):
+    run = _fake_run(tmp_path, rounds=2)
+    init = _init_ckpt(tmp_path)
+    base = ["--run", str(run), "--upto", "1", "--init", init, "--anchor-coef", "3",
+            "--batch-seed", "4", "--epochs", "2", "--device", "cpu", "--no-eval"]
+    assert _main(rr, base + ["--out", str(tmp_path / "plain")]) == 0
+    assert _main(rr, base + ["--out", str(tmp_path / "ema"), "--ema-halflife", "3",
+                             "--compare", str(tmp_path / "plain" / "policy.pt")]) == 0
+    row = json.loads((tmp_path / "ema" / "row.json").read_text(encoding="utf-8"))
+    assert row["compare"]["identical"] is True
+
+
+def test_ema_체크포인트는_트래커_평균과_같다(rr, tmp_path):
+    run = _fake_run(tmp_path, rounds=2)
+    init = _init_ckpt(tmp_path)
+    out = tmp_path / "out"
+    assert _main(rr, ["--run", str(run), "--upto", "1", "--init", init, "--anchor-coef", "3",
+                      "--batch-seed", "4", "--epochs", "2", "--ema-halflife", "3",
+                      "--ema-halflife", "40", "--out", str(out), "--device", "cpu",
+                      "--no-eval"]) == 0
+    net, _, ema = rr.refit(init, rr.load_upto(str(run / "data"), 1), upto=1, batch_seed=4,
+                           epochs=2, max_updates=None, anchor_coef=3.0, init_seed=0, dev="cpu",
+                           ema_halflives=(3, 40))
+    assert ema.halflives() == [3, 40]
+    for h in (3, 40):
+        assert rr.same_weights(ema.averaged(h, net), str(out / f"policy-ema{h}.pt"))
+    assert not rr.same_weights(ema.averaged(3, net), str(out / "policy-ema40.pt"))
+    assert not rr.same_weights(net, str(out / "policy-ema3.pt"))
+
+
+def test_ema_도_평가한다(rr, tmp_path, monkeypatch):
+    run = _fake_run(tmp_path, rounds=2)
+    init = _init_ckpt(tmp_path)
+    calls = []
+    _fake_eval(monkeypatch, rr, calls)
+    out = tmp_path / "out"
+    assert _main(rr, ["--run", str(run), "--upto", "1", "--init", init, "--anchor-coef", "0",
+                      "--batch-seed", "1", "--epochs", "1", "--ema-halflife", "4",
+                      "--eval-stage", "stage1", "--eval-stage", "stage3b",
+                      "--out", str(out), "--device", "cpu"]) == 0
+    row = json.loads((out / "row.json").read_text(encoding="utf-8"))
+    assert row["eval"]["stage3b"]["window"] == "v8~v11"
+    assert row["ema"]["4"]["eval"]["stage3b"]["window"] == "v8~v11"
+    assert row["ema"]["4"]["eval"]["stage1"]["window"] == "original"
+    assert len(calls) == 4                       # (원래 + EMA 하나) × 단계 둘
+
+
+def test_ema_평가는_평균_그물을_잰다(rr, tmp_path, monkeypatch):
+    # 평가 호출 수만으로는 EMA 칸에 원래 그물이 들어가도 모른다 — 잰 그물의 가중치를 본다
+    run = _fake_run(tmp_path, rounds=2)
+    init = _init_ckpt(tmp_path)
+    _fake_eval(monkeypatch, rr, [])
+    inner, nets = rr.evaluate_policy, []
+
+    def spy(net, boards, **kw):
+        nets.append(copy.deepcopy(net))
+        return inner(net, boards, **kw)
+
+    monkeypatch.setattr(rr, "evaluate_policy", spy)
+    out = tmp_path / "out"
+    assert _main(rr, ["--run", str(run), "--upto", "1", "--init", init, "--anchor-coef", "3",
+                      "--batch-seed", "1", "--epochs", "2", "--ema-halflife", "4",
+                      "--eval-stage", "stage1", "--out", str(out), "--device", "cpu"]) == 0
+    assert len(nets) == 2                        # 원래 그물 먼저, 그다음 EMA
+    assert rr.same_weights(nets[0], str(out / "policy.pt"))
+    assert rr.same_weights(nets[1], str(out / "policy-ema4.pt"))
+    assert not rr.same_weights(nets[1], str(out / "policy.pt"))
+
+
+@pytest.mark.parametrize("bad", [["0"], ["-3"], ["5", "5"]])
+def test_잘못된_ema_반감기는_거부한다(rr, tmp_path, bad):
+    run = _fake_run(tmp_path, rounds=2)
+    init = _init_ckpt(tmp_path)
+    argv = ["--run", str(run), "--upto", "1", "--init", init, "--anchor-coef", "0",
+            "--batch-seed", "0", "--out", str(tmp_path / "o"), "--device", "cpu", "--no-eval"]
+    for h in bad:
+        argv += ["--ema-halflife", h]
+    with pytest.raises(SystemExit) as e:
+        _main(rr, argv)
+    assert e.value.code == 2
+    assert not (tmp_path / "o").exists()
+
+
+def test_dry_run_은_ema_반감기를_보여준다(rr, tmp_path, capsys):
+    run = _fake_run(tmp_path, rounds=2)
+    init = _init_ckpt(tmp_path)
+    assert _main(rr, ["--run", str(run), "--upto", "1", "--init", init, "--anchor-coef", "3",
+                      "--batch-seed", "2", "--ema-halflife", "2500", "--ema-halflife", "500",
+                      "--out", str(tmp_path / "o"), "--device", "cpu", "--dry-run"]) == 0
+    text = capsys.readouterr().out
+    assert "EMA" in text and "2500" in text and "500" in text
+    assert not (tmp_path / "o").exists()

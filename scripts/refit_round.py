@@ -44,8 +44,8 @@ from vtd_rl.policy import device as pick_device  # noqa: E402
 from vtd_rl.policy.dataset import DaggerDataset, load_shard  # noqa: E402
 from vtd_rl.policy.evaluate import evaluate_policy  # noqa: E402
 from vtd_rl.policy.net import DrivePolicy  # noqa: E402
-from vtd_rl.policy.train import (TrainConfig, make_reference, squash_aligned,  # noqa: E402
-                                 train_epochs)
+from vtd_rl.policy.train import (EmaTracker, TrainConfig, make_reference,  # noqa: E402
+                                 squash_aligned, train_epochs)
 from vtd_rl.world.board import load_window, window_label  # noqa: E402
 
 #: M4s 가 학습에 쓴 에폭(`run_dagger --epochs 8`). `--updates-like` 예산의 밑값이다.
@@ -150,15 +150,22 @@ def start_net(init: str, dev) -> DrivePolicy:
     return net
 
 
-def refit(init, dataset, upto, batch_seed, epochs, max_updates, anchor_coef, init_seed, dev):
-    """`run_dagger.py:952-987` 과 같은 순서로 그물 하나를 학습한다 → `(net, train)`."""
+def refit(init, dataset, upto, batch_seed, epochs, max_updates, anchor_coef, init_seed, dev,
+          ema_halflives=()):
+    """`run_dagger.py:952-987` 과 같은 순서로 그물 하나를 학습한다 → `(net, train, ema)`.
+
+    `ema_halflives` 를 주면 `EmaTracker` 를 학습 그물을 만든 **뒤**, 학습 **전**에 만든다 —
+    복사만 하므로 난수를 안 쓰고, 학습 그물은 안 주었을 때와 비트 단위로 같다. 안 주면
+    `ema` 는 `None` 이다.
+    """
     ref = make_reference(start_net(init, dev)) if anchor_coef > 0.0 else None
     torch.manual_seed(init_seed + upto)
     net = start_net(init, dev)
+    ema = EmaTracker(net, ema_halflives) if ema_halflives else None
     tcfg = squash_aligned(TrainConfig(epochs=epochs, seed=batch_seed, anchor_coef=anchor_coef,
                                       max_updates=max_updates), net)
-    train = train_epochs(net, dataset, tcfg, device=dev, ref=ref)
-    return net, train
+    train = train_epochs(net, dataset, tcfg, device=dev, ref=ref, ema=ema)
+    return net, train, ema
 
 
 def same_weights(net, ckpt: str) -> bool:
@@ -189,14 +196,16 @@ def evaluate(net, stages, window_variants, window_offset, eval_seeds) -> dict:
     return out
 
 
-def build_row(a, samples, max_updates, epochs, train, compare, ev, seconds, dev) -> dict:
+def build_row(a, samples, max_updates, epochs, train, compare, ev, seconds, dev,
+              ema=None) -> dict:
     return {"run": a.run, "upto": a.upto, "init": a.init, "init_seed": a.init_seed,
             "anchor_coef": a.anchor_coef, "batch_seed": a.batch_seed,
             "epochs": epochs, "max_updates": max_updates, "updates_like": a.updates_like,
             "samples": samples, "train": train, "compare": compare,
             "window": window_label(a.window_variants, a.window_offset),
             "eval_seeds": a.eval_seeds, "eval": ev, "seconds": seconds,
-            "device": str(dev), "host": platform.node(), "rule_stack": rs.commit()[:7]}
+            "device": str(dev), "host": platform.node(), "rule_stack": rs.commit()[:7],
+            "ema": ema}
 
 
 def parse(argv):
@@ -220,6 +229,8 @@ def parse(argv):
     ap.add_argument("--window-offset", type=int, default=8)
     ap.add_argument("--eval-seeds", type=int, default=3)
     ap.add_argument("--compare", default=None, help="가중치가 같은지 볼 체크포인트")
+    ap.add_argument("--ema-halflife", type=int, action="append", default=[],
+                    help="가중치 지수이동평균의 반감기(걸음 수, 반복 가능) — policy-ema{H}.pt 로 저장")
     ap.add_argument("--no-eval", action="store_true")
     ap.add_argument("--device", default="auto")
     ap.add_argument("--dry-run", action="store_true")
@@ -231,6 +242,11 @@ def parse(argv):
             stage_path(s)
     except ValueError as exc:
         ap.error(str(exc))
+    bad = [h for h in a.ema_halflife if h <= 0]
+    if bad:
+        ap.error(f"--ema-halflife 는 양의 정수(걸음 수)여야 한다 — {bad}")
+    if len(set(a.ema_halflife)) != len(a.ema_halflife):
+        ap.error(f"--ema-halflife 에 같은 값이 있다 — {a.ema_halflife}")
     # 오타는 데이터를 올리기 전에, --dry-run 에서도 잡는다
     if not os.path.exists(a.init):
         ap.error(f"--init 체크포인트가 없다: {a.init}")
@@ -261,13 +277,15 @@ def main(argv=None) -> int:
               f"{'' if a.updates_like is None else f' (라운드 0~{a.updates_like} 를 {a.epochs} 에폭)'}"
               f" · 실효 에폭 {epochs} · 배치 시드 {a.batch_seed} · 앵커 {a.anchor_coef}")
         print(f"평가: {'안 함' if a.no_eval else f'{win} · 단계 {a.eval_stage} · 평가 시드 {a.eval_seeds}'}")
+        print(f"EMA: {'없음' if not a.ema_halflife else '반감기 ' + ', '.join(map(str, a.ema_halflife)) + ' 걸음'}")
         print(f"비교: {a.compare or '없음'} · 출력: {a.out}")
         return 0
 
     dev = pick_device(a.device)
     t0 = time.perf_counter()
-    net, train = refit(a.init, dataset, a.upto, a.batch_seed, epochs, max_updates,
-                       a.anchor_coef, a.init_seed, dev)
+    net, train, ema = refit(a.init, dataset, a.upto, a.batch_seed, epochs, max_updates,
+                            a.anchor_coef, a.init_seed, dev,
+                            ema_halflives=tuple(a.ema_halflife))
     samples = len(dataset)
     del dataset
     gc.collect()                 # 평가 전에 데이터를 놓는다 — 병렬 갈래가 메모리를 나눠 쓴다
@@ -285,8 +303,19 @@ def main(argv=None) -> int:
               file=sys.stderr, flush=True)
     ev = None if a.no_eval else evaluate(net, a.eval_stage, a.window_variants,
                                          a.window_offset, a.eval_seeds)
+    ema_rows = None
+    if ema is not None:           # 원래 그물을 다 잰 뒤에 — 반감기마다 따로 저장하고 잰다
+        ema_rows = {}
+        for h in ema.halflives():
+            ema_net = ema.averaged(h, net)
+            path = os.path.join(a.out, f"policy-ema{h}.pt")
+            ema_net.save(path)
+            ema_ev = None if a.no_eval else evaluate(ema_net, a.eval_stage, a.window_variants,
+                                                     a.window_offset, a.eval_seeds)
+            ema_rows[str(h)] = {"ckpt": path, "eval": ema_ev}
+            del ema_net
     row = build_row(a, samples, max_updates, epochs, train, compare, ev,
-                    time.perf_counter() - t0, dev)
+                    time.perf_counter() - t0, dev, ema_rows)
     # 병렬 실행기는 row.json 이 있으면 "끝났다" 로 본다 — 쓰다 죽어도 반쪽짜리가 남지 않게
     # 같은 폴더의 임시 파일에 쓴 뒤 한 번에 바꿔 놓는다
     row_path = os.path.join(a.out, "row.json")
