@@ -61,6 +61,11 @@ class TrainConfig:
                                      # 아예 안 계산하므로 기존 호출부와 **비트 단위로 같다**.
     near_weight: float = 1.0         # 그 표본의 손실 배율. 1.0 도 "가중치 없음" 경로를 탄다 —
                                      # 실험의 대조군이 옛 숫자와 정확히 같아야 하기 때문.
+    max_updates: int | None = None   # 주면 옵티마이저 걸음이 이 수에 닿는 순간 멈춘다(에폭 중간이어도).
+                                     # `None` 이 "상한 없음" 이고 지금과 **비트 단위로 같다**(M4t).
+                                     # M4s 의 r4 하락이 "같은 8 에폭이 라운드마다 더 많은 갱신" 탓인지
+                                     # 가르려고 넣었다. 상한이 `epochs × 배치 수` 보다 크면 에폭에서
+                                     # 멈춘다 — 실제 걸음은 반환값 `updates` 로 확인한다.
 
     def effective_lr(self) -> float:
         """실제로 Adam 에 넘길 학습률. `anchor_lr` 이 있으면 그것, 없으면 `lr`.
@@ -237,14 +242,23 @@ def train_epochs(net, dataset, cfg: TrainConfig = TrainConfig(), device=None, lo
 
     참조는 옵티마이저에 **안 들어간다**(`net.parameters()` 만 넘긴다) — 참조가 같이 학습되면
     앵커가 아무것도 안 묶는다.
+
+    `cfg.max_updates` 를 주면 걸음 수가 거기 닿는 순간 멈춘다. 끊긴 에폭도 `log` 에 한 번
+    기록하고, 그 에폭의 평균은 실제로 돈 배치 수로 낸다. 반환값 `updates` 가 실제 걸음 수다.
     """
+    if cfg.max_updates is not None and cfg.max_updates <= 0:
+        raise ValueError(f"max_updates 는 양수거나 None 이어야 한다 — {cfg.max_updates!r}")
     device = device or net.device
     net.to(device).train()
     if ref is not None:
         ref.to(device)               # 학생과 같은 장치여야 한다(참조는 train() 으로 안 돌린다)
     opt = torch.optim.Adam(net.parameters(), lr=cfg.effective_lr())
     gen = torch.Generator().manual_seed(cfg.seed)
-    t0, last = time.perf_counter(), {}
+    t0, last, updates = time.perf_counter(), {}, 0
+
+    def spent() -> bool:
+        return cfg.max_updates is not None and updates >= cfg.max_updates
+
     for epoch in range(cfg.epochs):
         sums = {"total": 0.0, "control": 0.0, "turn": 0.0, "anchor": 0.0, "near_frac": 0.0}
         batches = 0
@@ -258,6 +272,9 @@ def train_epochs(net, dataset, cfg: TrainConfig = TrainConfig(), device=None, lo
             for k in sums:
                 sums[k] += parts[k]
             batches += 1
+            updates += 1
+            if spent():
+                break
         last = {"epoch": epoch, "loss": sums["total"] / max(batches, 1),
                 "control": sums["control"] / max(batches, 1),
                 "turn": sums["turn"] / max(batches, 1),
@@ -265,12 +282,14 @@ def train_epochs(net, dataset, cfg: TrainConfig = TrainConfig(), device=None, lo
                 "near_frac": sums["near_frac"] / max(batches, 1)}
         if log is not None:
             log(last)
+        if spent():
+            break
     net.eval()
     return {"epochs": cfg.epochs, "samples": len(dataset), "loss": last.get("loss", float("nan")),
             "control": last.get("control", float("nan")), "turn": last.get("turn", float("nan")),
             "anchor": last.get("anchor", float("nan")),
             "near_frac": last.get("near_frac", float("nan")), "lr": cfg.effective_lr(),
-            "seconds": time.perf_counter() - t0}
+            "seconds": time.perf_counter() - t0, "updates": updates}
 
 
 def squash_aligned(cfg: TrainConfig, net) -> TrainConfig:

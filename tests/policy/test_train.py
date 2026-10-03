@@ -707,3 +707,84 @@ def test_atanh_eps_기본값은_실측으로_고른_1e_2다():
     아니다). 라벨의 10.48%(가속 20.77%, 조향 0.19%)가 정확히 ±1 이라 ε=1e-6 이면
     기울기 노름 중앙값이 54.72(비스쿼시 기준 1.59 의 34배)까지 뛴다."""
     assert TrainConfig().atanh_eps == pytest.approx(1e-2)
+
+
+# ── M4t: 갱신 횟수 상한 ────────────────────────────────────────────────────────────
+# M4s 의 r4 하락이 "같은 8 에폭이 라운드마다 더 많은 갱신" 탓인지 가르려면 갱신 횟수를
+# 에폭과 따로 정할 수 있어야 한다. 기본값(None)은 지금과 비트 동일해야 한다.
+
+
+def _params(net):
+    return {k: v.detach().clone() for k, v in net.state_dict().items()}
+
+
+def _same(a, b):
+    return a.keys() == b.keys() and all(torch.equal(a[k], b[k]) for k in a)
+
+
+def _fresh(seed=0):
+    torch.manual_seed(seed)
+    return DrivePolicy(PolicyConfig(trunk=(32, 32)))
+
+
+def test_max_updates_기본값은_None이다():
+    assert TrainConfig().max_updates is None
+
+
+def test_max_updates_None_은_아주_큰_상한과_비트_동일하다():
+    ds = toy_dataset(300)                      # 300 / 128 → 배치 3 개(마지막 44 행)
+    a, b = _fresh(), _fresh()
+    out_a = train_epochs(a, ds, TrainConfig(epochs=2, batch_size=128, seed=7))
+    out_b = train_epochs(b, ds, TrainConfig(epochs=2, batch_size=128, seed=7, max_updates=10**9))
+    assert _same(_params(a), _params(b))
+    assert out_a["loss"] == out_b["loss"]
+    assert out_a["updates"] == out_b["updates"] == 2 * 3
+
+
+def test_updates_는_실제_걸음_수다():
+    ds = toy_dataset(512)                      # 512 / 128 → 배치 4 개
+    out = train_epochs(_fresh(), ds, TrainConfig(epochs=3, batch_size=128))
+    assert out["updates"] == 12 and out["epochs"] == 3
+
+
+def test_max_updates_는_에폭_경계에서_멈춘_것과_같다():
+    ds = toy_dataset(512)                      # 에폭당 4 걸음
+    a, b = _fresh(), _fresh()
+    out_a = train_epochs(a, ds, TrainConfig(epochs=1, batch_size=128, seed=3))
+    out_b = train_epochs(b, ds, TrainConfig(epochs=5, batch_size=128, seed=3, max_updates=4))
+    assert _same(_params(a), _params(b))
+    assert out_b["updates"] == 4
+
+
+def test_max_updates_는_뒤_에폭_수와_무관하다():
+    # 같은 시드면 배치 순서가 같다 — 예산을 넘는 에폭을 몇으로 두든 결과가 같아야 한다.
+    ds = toy_dataset(512)
+    a, b = _fresh(), _fresh()
+    train_epochs(a, ds, TrainConfig(epochs=2, batch_size=128, seed=5, max_updates=6))
+    train_epochs(b, ds, TrainConfig(epochs=9, batch_size=128, seed=5, max_updates=6))
+    assert _same(_params(a), _params(b))
+
+
+def test_max_updates_가_에폭_중간에_끊으면_그_에폭을_한_번_기록한다():
+    ds = toy_dataset(512)                      # 에폭당 4 걸음 → 6 걸음 = 에폭 0 전부 + 에폭 1 의 2 걸음
+    seen = []
+    out = train_epochs(_fresh(), ds, TrainConfig(epochs=5, batch_size=128, max_updates=6),
+                       log=seen.append)
+    assert [s["epoch"] for s in seen] == [0, 1]
+    assert out["updates"] == 6
+    assert np.isfinite(seen[-1]["loss"])
+
+
+def test_예산이_에폭보다_크면_에폭에서_멈추고_실제_걸음을_보고한다():
+    ds = toy_dataset(512)
+    out = train_epochs(_fresh(), ds, TrainConfig(epochs=2, batch_size=128, max_updates=100))
+    assert out["updates"] == 8                 # 상한이 아니라 실제 걸음 — 부르는 쪽이 확인한다
+
+
+@pytest.mark.parametrize("bad", [0, -1])
+def test_max_updates_가_0이하면_학습_전에_거부한다(bad):
+    net = _fresh()
+    before = _params(net)
+    with pytest.raises(ValueError, match="max_updates"):
+        train_epochs(net, toy_dataset(64), TrainConfig(epochs=1, batch_size=32, max_updates=bad))
+    assert _same(before, _params(net))
