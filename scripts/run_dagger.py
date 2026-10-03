@@ -58,7 +58,7 @@ REPO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, REPO)
 from vtd_rl import rule_stack as rs  # noqa: E402
 from vtd_rl.policy import device as pick_device  # noqa: E402
-from vtd_rl.policy.collect import collect_episode  # noqa: E402
+from vtd_rl.policy.collect import MIX_MODES, collect_episode  # noqa: E402
 from vtd_rl.policy.dataset import load_dir, load_shard, save_shard  # noqa: E402
 from vtd_rl.policy.evaluate import evaluate_policy, evaluate_teacher, violation_counts  # noqa: E402
 from vtd_rl.policy.net import DrivePolicy, PolicyConfig  # noqa: E402
@@ -422,15 +422,21 @@ def check_smoke(stages, smoke: bool):
             "--smoke 를 빼고 돌리거나 액터 없는 단계(stage1·stage2)를 써라.")
 
 
-def build_jobs(targets, rnd, beta, policy_path, data_dir, smoke, variants, seeds):
-    """한 라운드의 수집 작업 묶음. **판 이름과 변종 수가 같이 실려야** 일꾼이 그 판을 다시 짓는다."""
-    return [(path, name, 1000 * rnd + s, beta, policy_path, data_dir, rnd, smoke, variants)
+def build_jobs(targets, rnd, beta, policy_path, data_dir, smoke, variants, seeds,
+               mix="step", mix_len=30):
+    """한 라운드의 수집 작업 묶음. **판 이름과 변종 수가 같이 실려야** 일꾼이 그 판을 다시 짓는다.
+
+    묶음 `(path, name, seed, beta, policy_path, data_dir, rnd, smoke, mix, mix_len, variants)` —
+    시드는 2 번 칸, **변종 수는 늘 마지막 칸**이다(M4z 가 `mix`·`mix_len` 을 그 앞에 끼웠다).
+    """
+    return [(path, name, 1000 * rnd + s, beta, policy_path, data_dir, rnd, smoke, mix, mix_len,
+             variants)
             for path, name in targets for s in range(seeds)]
 
 
 def job_board(job):
     """작업 묶음이 가리키는 판을 다시 짓는다 — 수집은 spawn 프로세스라 묶음만 보고 짓는다."""
-    curriculum, name, _seed, _beta, _policy, _out, _rnd, smoke, variants = job
+    curriculum, name, _seed, _beta, _policy, _out, _rnd, smoke, _mix, _mix_len, variants = job
     boards = _boards(curriculum, smoke, name, variants)
     if not boards:
         # 변종 수가 안 실려 오면 `course_A@v1` 을 못 찾는다 — IndexError 말고 이름을 말한다.
@@ -440,10 +446,12 @@ def job_board(job):
 
 
 def _collect_job(job):
-    _curriculum, name, seed, beta, policy_path, out, rnd, _smoke, _variants = job
+    _curriculum, name, seed, beta, policy_path, out, rnd, _smoke, mix, mix_len, _variants = job
     board = job_board(job)
     policy = DrivePolicy.load(policy_path) if policy_path else None
-    shard = collect_episode(board, policy=policy, beta=beta, seed=seed)
+    # 기본(step)은 예전과 **같은 인자**로 부른다 — 과거 실행과 비트 동일.
+    kw = {} if mix == "step" else {"mix": mix, "mix_len": mix_len}
+    shard = collect_episode(board, policy=policy, beta=beta, seed=seed, **kw)
     save_shard(shard, os.path.join(out, f"r{rnd}-{name}-s{seed}.npz"))
     return shard.meta
 
@@ -709,6 +717,11 @@ def _preflight_lines(a, sel_metric) -> list:
             + ("  ← 예전 그대로(rnd)" if a.train_seed == 0 else "")]
 
 
+def _mix_line(mix: str, mix_len: int) -> str:
+    """수집이 β 를 **어느 단위로** 섞는지 — 기본(step: 걸음마다)이어도 늘 찍는다."""
+    return f"수집 섞기: {mix}" + (f" · 구간 {mix_len} 걸음" if mix == "segment" else "")
+
+
 def _beta_line(betas, rounds: int, given: bool) -> str:
     """라운드마다 **실제로 쓸** β — 목록 끝을 넘은 라운드(0.0)를 눈에 띄게 적는다."""
     cells = [f"r{r}={beta_at(betas, r):g}" + ("(목록 끝 → 0)" if r >= len(betas) else "")
@@ -816,6 +829,13 @@ def main():
                          f" {','.join(f'{b:g}' for b in BETAS)} 그대로다. 목록보다 긴 라운드는"
                          " β=0.0 이다(기본 스케줄과 같은 규칙). M4r: β 0.1·0 라운드가 실패"
                          " 주행으로 데이터를 채워 장애물 성적이 다시 0 으로 내려갔다")
+    ap.add_argument("--mix", choices=MIX_MODES, default="step",
+                    help="수집이 β(선생님이 몰 확률)를 **어느 단위로** 섞는지(기본 step = 예전 그대로"
+                         " 걸음마다 동전을 던진다). segment 는 --mix-len 걸음 구간마다, episode 는"
+                         " 판마다 한 번 던져 그 동안은 선생님이든 학생이든 한쪽이 계속 몬다. 기본이"
+                         " 아니면 로그 행에 mix·mix_len 이 붙고 성적표에 한 줄이 더해진다")
+    ap.add_argument("--mix-len", type=int, default=30,
+                    help="--mix segment 의 구간 길이[걸음](기본 30, 1 이상). 다른 --mix 에서는 안 쓴다")
     ap.add_argument("--select-variants", type=int, default=0,
                     help="라운드 선택용 변종 수 N(기본 0 = 예전 그대로 원본 판 라운드 평가로"
                          " 고른다). N>0 이면 라운드마다 **액터가 있는** 평가 단계를 변종 창"
@@ -839,6 +859,9 @@ def main():
         ap.error("--anchor-coef 는 0 이상이어야 한다")
     if a.near_m < 0.0:
         ap.error("--near-m 은 0 이상이어야 한다")
+    if a.mix_len < 1:
+        # 구간 길이 0 은 "구간이 없다" 라 뜻이 없다 — dry-run 보다 앞에서 거부한다.
+        ap.error("--mix-len 은 1 이상이어야 한다")
     if a.near_weight <= 0.0:
         # 0 이면 그 표본이 사라지고, 전부 0 이면 가중치 합이 0 이라 손실이 NaN 이다.
         ap.error("--near-weight 는 0 보다 커야 한다")
@@ -903,7 +926,9 @@ def main():
                                        a.seeds, a.rounds)
                         + _preflight_lines(a, sel_metric)
                         + [_beta_line(betas, a.rounds, a.betas is not None)]
-                        + _window_lines(a, eval_names)))
+                        + _window_lines(a, eval_names)
+                        # 맨 뒤에 붙인다 — 예전 dry-run 줄의 자리(β 줄 바로 뒤 창 줄)를 안 민다.
+                        + [_mix_line(a.mix, a.mix_len)]))
         return 0
     if not a.out:
         ap.error("--out 이 필요하다")
@@ -957,7 +982,7 @@ def main():
             targets = collect_targets(collect_paths, a.smoke, a.variants)
             names = [name for _p, name in targets]
             jobs = build_jobs(targets, rnd, beta, policy_path, data_dir, a.smoke,
-                              a.variants, a.seeds)
+                              a.variants, a.seeds, mix=a.mix, mix_len=a.mix_len)
             t_collect = time.perf_counter()
             if a.workers > 1:
                 with mp.get_context("spawn").Pool(a.workers) as pool:
@@ -1000,6 +1025,9 @@ def main():
                    # 실제로 쓴 배치 순서 시드 — 시드 3 개의 로그를 나란히 놓고 읽을 때
                    # 어느 줄이 어느 실행인지 이것으로 가른다.
                    "train_seed": tcfg.seed}
+            # 기본(step)이면 이 칸이 **없다** — 로그 한 줄이 예전과 바이트까지 같다.
+            if a.mix != "step":
+                row.update({"mix": a.mix, "mix_len": a.mix_len})
             # 평가는 단계마다 그 단계 이름을 열쇠로 넣는다 — 기본값이면 예전과 같은
             # `"stage1"`·`"stage2"` 가 그대로 나와 옛 로그·`--report-only` 와 호환된다.
             for stage, boards_e in eval_boards(eval_names, a.smoke):
@@ -1113,6 +1141,14 @@ def main():
                      + " · ".join(f"r{r['round']}={r['beta']:g}" for r in rounds)
                      + f" — 기본({','.join(f'{b:g}' for b in BETAS)})과 다르다. 목록보다 긴"
                      " 라운드는 β=0 이다.")
+    # 기본(step)이 아닐 때만 줄을 넣는다(기본 성적표는 한 글자도 안 달라진다). 적는 값은 인자가
+    # 아니라 **로그의 값**(실제로 쓴 것)이다 — `--report-only` 에서 `--mix` 를 안 줘도 맞다.
+    # 옛 로그에는 `mix` 칸이 없다 — 그때는 안 적는다.
+    if rounds[0].get("mix"):
+        lines.append(f"- 수집 섞기: `--mix {rounds[0]['mix']}`"
+                     + (f" · 구간 {rounds[0]['mix_len']} 걸음" if rounds[0]["mix"] == "segment"
+                        else "")
+                     + " — 기본(step: 걸음마다)과 다르다.")
     # 선택 창을 켰을 때만 붙는 줄 — 아래 첫 표(원본 판)와 선택이 쓴 숫자를 헷갈리지 않게.
     if use_window:
         lines.append(f"- 라운드 선택은 **선택 창 `{select_source}`** 평가로 했다 — 아래 첫 표의"
