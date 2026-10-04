@@ -65,6 +65,9 @@ class RewardConfig:
     # 넘은 속도[m/s] × red_profile 을 깎는다(항 `red`). 기본 0 이면 꺼짐(항도 없다, 예전과 같다).
     red_profile: float = 0.0
     red_decel: float = 2.0           # 곡선의 감속[m/s²]
+    # M6x — 차로 침범 깊이 벌. 채점기가 ③ 물림으로 세는 행의 0.1 m 넘는 깊이×시간[m·s] × lane_profile 을
+    # 걸음마다 깎는다(항 `lane`, 행이 풀리는 2.5 초 뒤에 온다). 기본 0 이면 꺼짐(항도 없다).
+    lane_profile: float = 0.0
 
     def __post_init__(self):
         pairs = []
@@ -84,6 +87,8 @@ class RewardConfig:
             raise ValueError(f"red_profile 은 유한한 0 이상이어야 한다: {self.red_profile}")
         if not math.isfinite(self.red_decel) or self.red_decel <= 0.0:
             raise ValueError(f"red_decel 은 유한한 양수여야 한다: {self.red_decel}")
+        if not math.isfinite(self.lane_profile) or self.lane_profile < 0.0:
+            raise ValueError(f"lane_profile 은 유한한 0 이상이어야 한다: {self.lane_profile}")
 
 
 @dataclass
@@ -165,7 +170,8 @@ class RewardShaper:
         self.tracker.reset()
         self._prev_intent = None
 
-    def step(self, hits, ds: float, action, prev_action, outcome: str, intent=None, red=None) -> RewardStep:
+    def step(self, hits, ds: float, action, prev_action, outcome: str, intent=None, red=None,
+             lane=None) -> RewardStep:
         cfg = self.cfg
         # 충돌 항목(⑪⑭)은 `collision` 항이 따로 −50 을 물리므로 위반 합계에서 뺀다(기존 규칙).
         # `charge` 가 감점까지 내므로, 충돌 히트를 **처음부터 갈라서** 두 번 부른다 —
@@ -208,4 +214,6 @@ class RewardShaper:
         }
         if cfg.red_profile > 0.0:     # 끈 실행은 항 자체가 없다(합·로그가 예전과 같다)
             terms["red"] = 0.0 - cfg.red_profile * red_excess(red, cfg.red_decel)   # 0.0− : 적색 아닌 걸음이 −0.0 이 안 되게
+        if cfg.lane_profile > 0.0:    # 끈 실행은 항 자체가 없다
+            terms["lane"] = 0.0 - cfg.lane_profile * (lane or 0.0)   # 0.0− : 침범 없는 걸음이 −0.0 이 안 되게
         return RewardStep(sum(terms.values()), terms, collision, len(counted) + len(col_counted))

@@ -142,8 +142,10 @@ class VtdDriveEnv(gym.Env):
         if outcome != RUNNING or any(h.item in COLLISION_ITEMS for h in hits):
             hits += self.referee.finish()          # 남은 대기 판정까지 이 걸음의 보상에 넣는다
         red = self._red_gap() if self.cfg.reward.red_profile > 0.0 else None
+        lane = (self.referee.take_edge_excess() * self.cfg.world.dt
+                if self.cfg.reward.lane_profile > 0.0 else None)       # [m·행] × 프레임 dt = [m·s]
         shaped = self._shaper.step(hits, max(0.0, self._info.s - s0), action, self._prev_action,
-                                   outcome, intent=self.intent, red=red)
+                                   outcome, intent=self.intent, red=red, lane=lane)
         self._prev_action = {"control": np.asarray(action["control"], dtype=np.float32).copy(),
                              "turn": int(action["turn"])}
         terminated = outcome in ("goal", "offroad") or shaped.collision

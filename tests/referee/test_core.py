@@ -1,6 +1,7 @@
 import collections
 import copy
 import random
+from types import SimpleNamespace
 
 from vtd_rl import rule_stack as rs
 from vtd_rl.referee.core import Hit, Referee, SpanTracker
@@ -93,3 +94,12 @@ def test_속도_판정은_합성_행에서_채점기와_같다():
     ref.finish()
     assert collections.Counter((hit.sec, hit.item, hit.level) for hit in ref.hits) == want
     assert {lv for _, _, lv in want} == {"minor", "major"}
+
+
+def test_take_edge_excess_는_합을_돌려주고_비운다():
+    from vtd_rl.referee.core import Referee
+    ref = Referee.__new__(Referee)
+    ref.judges = [SimpleNamespace(edge_excess=1.5), SimpleNamespace(), SimpleNamespace(edge_excess=0.25)]
+    assert ref.take_edge_excess() == 1.75
+    assert ref.judges[0].edge_excess == 0.0 and ref.judges[2].edge_excess == 0.0
+    assert ref.take_edge_excess() == 0.0

@@ -391,3 +391,28 @@ def test_red_profile_은_넘은_속도에_비례해_깎는다():
 def test_잘못된_red_설정은_거부한다(kw):
     with pytest.raises(ValueError):
         RewardConfig(**kw)
+
+
+def test_lane_profile_기본값은_꺼짐이고_항이_없다():
+    assert RewardConfig().lane_profile == 0.0
+    sh = RewardShaper(h_board(), RewardConfig())
+    sh.reset()
+    zero = {"control": [0.0, 0.0], "turn": 0}
+    assert "lane" not in sh.step([], 0.0, zero, zero, "running", lane=2.0).terms
+
+
+def test_lane_profile_은_침범_깊이_시간에_비례해_깎는다():
+    sh = RewardShaper(h_board(), RewardConfig(lane_profile=5.0))
+    sh.reset()
+    zero = {"control": [0.0, 0.0], "turn": 0}
+    out = sh.step([], 0.0, zero, zero, "running", lane=0.3)
+    assert out.terms["lane"] == pytest.approx(-1.5)
+    assert out.total == pytest.approx(sum(out.terms.values()))
+    calm = sh.step([], 0.0, zero, zero, "running", lane=None)
+    assert calm.terms["lane"] == 0.0 and str(calm.terms["lane"]) == "0.0"   # −0.0 이 아니다
+
+
+@pytest.mark.parametrize("bad", [-1.0, float("nan"), float("inf")])
+def test_잘못된_lane_profile_은_거부한다(bad):
+    with pytest.raises(ValueError):
+        RewardConfig(lane_profile=bad)

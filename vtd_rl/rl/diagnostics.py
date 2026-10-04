@@ -96,8 +96,8 @@ class OutcomeCounter:
 
 # 판당 누적을 볼 항목 — `VtdDriveEnv` 가 info["reward_terms"] 로 내는 키들 중
 # 배분 논쟁에 필요한 것만 고른다(collision·offroad·goal 은 종료 사유로 이미 보인다).
-# (`red` 는 M6v 감속 곡선 — 끈 실행은 0)
-TERM_KEYS = ("progress", "time", "violation", "comfort", "red")
+# (`red` 는 M6v 감속 곡선, `lane` 은 M6x 차로 침범 깊이 — 끈 실행은 0)
+TERM_KEYS = ("progress", "time", "violation", "comfort", "red", "lane")
 
 
 class RewardTermTracker:

@@ -159,3 +159,12 @@ class Referee:
         for j in self.judges:
             out += j.finish()
         return self._apply(out)
+
+    def take_edge_excess(self) -> float:
+        """M6x — 판정기들이 쌓은 ③ 침범 깊이 합[m·행]을 돌려주고 0 으로 되돌린다(보상용)."""
+        total = 0.0
+        for j in self.judges:
+            if hasattr(j, "edge_excess"):
+                total += j.edge_excess
+                j.edge_excess = 0.0
+        return total

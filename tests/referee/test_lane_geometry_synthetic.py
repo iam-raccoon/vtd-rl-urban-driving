@@ -176,3 +176,26 @@ def test_무작위_합성_행_300판_일치():
                 item6[level] += cnt
     assert sum(item6.values()) > 0, "300 판 동안 ⑥ 실선 차로변경이 한 번도 안 울렸다"
     assert item6["minor"] > 0 and item6["major"] > 0, f"⑥ 경미/중대 둘 다 나와야 하는데 {item6}"
+
+
+def _excess(rows, lc_at):
+    ctx = SimpleNamespace(secs=_Secs(), lc_at=lc_at)
+    j = LaneGeometryJudge(ctx)
+    for r in copy.deepcopy(rows):
+        j.step(r)
+    j.finish()
+    return j.edge_excess
+
+
+def test_edge_excess_는_채점기가_세는_물림만_쌓는다():
+    # 물림 8 행(깊이 0.5 m) — 2.5 초 안에 차로변경이 오면 면책돼 0, 멀면 8 × (0.5 − 0.1).
+    assert _excess(_edge_then_change_rows(gap=1.0), _no_lc) == 0.0
+    far = _excess(_edge_then_change_rows(gap=3.0), _no_lc)
+    assert abs(far - 8 * (0.5 - sf.LANE_EDGE_M)) < 1e-9
+
+
+def test_edge_excess_를_쌓아도_판정은_그대로다():
+    rng = random.Random(11)
+    for _ in range(50):
+        rows, _lc = _gen(rng)
+        assert _judge(rows, _no_lc) == _score(rows, _no_lc)

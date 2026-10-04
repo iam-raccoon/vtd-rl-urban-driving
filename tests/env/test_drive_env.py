@@ -376,3 +376,45 @@ def test_red_profile_을_켜면_적색을_달려_지날_때_red_항이_깎인다
     assert min(on) < 0.0
     off = run(RewardConfig())
     assert all(r is None for r in off)
+
+
+def test_lane_profile_을_켜면_오른쪽으로_치우쳐_달릴_때_lane_항이_깎인다():
+    """H 0~250 을 오른쪽으로 조금씩 꺾으며 달려 길 가장자리를 문다 — 켜면 어느 걸음엔가 lane < 0."""
+    def run(cfg):
+        env = VtdDriveEnv([boards()[0]], EnvConfig(reward=cfg))
+        env.reset(seed=0)
+        lanes = []
+        for k in range(300):
+            steer = -0.05 if k > 40 else 0.0
+            _o, _r, term, trunc, info = env.step({"control": np.array([steer, 0.3], dtype=np.float32), "turn": 0})
+            lanes.append(info["reward_terms"].get("lane"))
+            if term or trunc:
+                break
+        env.close()
+        return lanes
+    on = run(RewardConfig(lane_profile=5.0))
+    assert min(on) < 0.0
+    assert all(v is None for v in run(RewardConfig()))
+
+
+def test_lane_항은_행이_풀리는_뒤_중간_걸음에도_오고_마지막_걸음에_남은_행이_들어온다():
+    """살살 꺾어 길 가장자리로 천천히 나가면(조향 −0.02) 물린 행이 2.5 초 뒤 풀려 중간 걸음에도 lane < 0 이고,
+
+    판이 끝나는 걸음(offroad)은 `finish()` 가 풀어 준 남은 행까지 받아 가장 크게 깎인다.
+    (−0.05 처럼 세게 꺾으면 곧바로 길을 벗어나 마지막 걸음의 한 번만 깎인다.)
+    """
+    env = VtdDriveEnv([boards()[0]], EnvConfig(reward=RewardConfig(lane_profile=5.0)))
+    env.reset(seed=0)
+    lanes, outcome = [], None
+    for k in range(400):
+        steer = -0.02 if k > 40 else 0.0
+        _o, _r, term, trunc, info = env.step({"control": np.array([steer, 0.3], dtype=np.float32), "turn": 0})
+        lanes.append(info["reward_terms"]["lane"])
+        if term or trunc:
+            outcome = info["outcome"]
+            break
+    env.close()
+    assert outcome == "offroad"
+    assert any(v < 0.0 for v in lanes[:-1])           # 판이 끝나기 전에도 풀린 행이 깎는다
+    assert lanes[-1] < min(lanes[:-1])                # 끝나는 걸음은 남은 행까지 받아 가장 크다
+    assert all(v <= 0.0 and str(v) != "-0.0" for v in lanes)
