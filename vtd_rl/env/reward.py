@@ -40,6 +40,24 @@ class RewardConfig:
                                      # 마다 한 번, 경미→중대 심화는 차액만. M4c 실측: repeat 는
                                      # 대회 기준 94.2/100 인 학생에게 판당 −115 를 물려 PPO 가
                                      # 점수를 올릴 이유를 없앤다(docs/reports/m4c-ppo-notes.md).
+    # M6u — 항목별 벌 배율 `((항목, 배율), ...)`. 그 항목의 히트는 minor·major 에 배율을 곱해 센다.
+    # 기본 `()` 이면 예전과 같다. 충돌 항목(⑪⑭)은 `collision` 항이 따로 물리므로 받지 않는다.
+    item_scale: tuple = ()
+
+    def __post_init__(self):
+        pairs = []
+        for pair in self.item_scale:
+            if len(pair) != 2:
+                raise ValueError(f"item_scale 은 (항목, 배율) 짝이어야 한다: {pair!r}")
+            item, scale = int(pair[0]), float(pair[1])
+            if not 1 <= item <= 15 or item in COLLISION_ITEMS:
+                raise ValueError(f"item_scale 항목은 1~15 이고 충돌 항목 {COLLISION_ITEMS} 가 아니어야 한다: {item}")
+            if scale < 0.0:
+                raise ValueError(f"item_scale 배율은 0 이상이어야 한다: {scale}")
+            pairs.append((item, scale))
+        if len({item for item, _ in pairs}) != len(pairs):
+            raise ValueError(f"item_scale 에 같은 항목이 두 번 있다: {pairs}")
+        object.__setattr__(self, "item_scale", tuple(pairs))   # frozen — 목록으로 줘도 튜플로 둔다(해시)
 
 
 @dataclass
@@ -128,7 +146,15 @@ class RewardShaper:
         # 그래야 "감점에서 충돌을 뺀다" 를 뺄셈으로 다시 구하지 않아도 된다.
         rule_hits = [h for h in hits if h.item not in COLLISION_ITEMS]
         col_hits = [h for h in hits if h.item in COLLISION_ITEMS]
-        counted, penalty = self.tracker.charge(rule_hits, cfg.minor, cfg.major)
+        # M6u — 배율을 건 항목은 따로 센다. 추적기 상태가 (항목, 구간) 열쇠라 나눠 불러도 결과가 같다.
+        scaled = {item for item, _ in cfg.item_scale}
+        counted, penalty = self.tracker.charge(
+            [h for h in rule_hits if h.item not in scaled], cfg.minor, cfg.major)
+        for item, scale in cfg.item_scale:
+            c, p = self.tracker.charge([h for h in rule_hits if h.item == item],
+                                       cfg.minor * scale, cfg.major * scale)
+            counted = counted + c
+            penalty += p
         col_counted, _col_penalty = self.tracker.charge(col_hits, cfg.minor, cfg.major)
         collision = bool(col_counted)
         violation = penalty * cfg.rule_scale

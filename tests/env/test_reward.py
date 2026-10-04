@@ -281,3 +281,69 @@ def test_구간당_한_번_모드가_채점기와_같은_감점을_낸다_속성
         tr = ViolationTracker(cfg.repeat_gap, violation_mode=cfg.violation_mode)
         _counted, total = tr.charge(hits, cfg.minor, cfg.major)
         assert -total == pytest.approx(sheet_total), (n_hits, hits)
+
+
+def test_item_scale_기본값은_비어_있고_예전과_같다():
+    assert RewardConfig().item_scale == ()
+    assert RewardConfig(item_scale=()) == RewardConfig()
+
+
+def test_item_scale_은_그_항목의_벌만_키운다():
+    b = h_board()
+    cfg = RewardConfig(item_scale=((7, 5.0),), rule_scale=2.0)
+    sh = RewardShaper(b, cfg)
+    sh.reset()
+    zero = {"control": [0.0, 0.0], "turn": 0}
+    out = sh.step([Hit(1.0, 0, 7, "major"), Hit(1.0, 0, 3, "major"), Hit(1.0, 0, 1, "minor")],
+                  0.0, zero, zero, "running")
+    assert out.terms["violation"] == pytest.approx((cfg.major * 5.0 + cfg.major + cfg.minor) * 2.0)
+    assert out.counted == 3
+
+
+def test_item_scale_은_구간당_한_번_심화_차액에도_곱한다():
+    b = h_board()
+    cfg = RewardConfig(item_scale=((7, 5.0),), violation_mode="once_per_section")
+    sh = RewardShaper(b, cfg)
+    sh.reset()
+    zero = {"control": [0.0, 0.0], "turn": 0}
+    p1 = sh.step([Hit(0.0, 0, 7, "minor")], 0.0, zero, zero, "running").terms["violation"]
+    p2 = sh.step([Hit(1.0, 0, 7, "major")], 0.0, zero, zero, "running").terms["violation"]
+    p3 = sh.step([Hit(2.0, 0, 7, "major")], 0.0, zero, zero, "running").terms["violation"]
+    assert p1 == pytest.approx(cfg.minor * 5.0)
+    assert p2 == pytest.approx((cfg.major - cfg.minor) * 5.0)
+    assert p3 == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize("mode", ["repeat", "once_per_section"])
+def test_배율_1_은_배율이_없는_것과_같다_속성(mode):
+    """항목끼리 나눠 세도 `(항목, 구간)` 열쇠라 결과가 같아야 한다 — 무작위 히트 흐름 300 개."""
+    b = h_board()
+    rng = random.Random(7)
+    zero = {"control": [0.0, 0.0], "turn": 0}
+    for _ in range(300):
+        stream = [[Hit(t * 0.05, rng.randrange(3), rng.choice((1, 3, 7, 13, 14)),
+                       rng.choice(("minor", "major"))) for _k in range(rng.randrange(3))]
+                  for t in range(40)]
+        plain = RewardShaper(b, RewardConfig(violation_mode=mode))
+        ones = RewardShaper(b, RewardConfig(violation_mode=mode, item_scale=((7, 1.0), (3, 1.0))))
+        plain.reset()
+        ones.reset()
+        for hits in stream:
+            a = plain.step(hits, 0.0, zero, zero, "running")
+            c = ones.step(hits, 0.0, zero, zero, "running")
+            assert c.terms["violation"] == pytest.approx(a.terms["violation"])
+            assert c.counted == a.counted and c.collision == a.collision
+
+
+def test_item_scale_목록을_줘도_튜플로_바뀌고_해시된다():
+    cfg = RewardConfig(item_scale=[[7, 5]])
+    assert cfg.item_scale == ((7, 5.0),)
+    assert isinstance(cfg.item_scale[0][1], float)
+    hash(cfg)
+
+
+@pytest.mark.parametrize("bad", [((11, 5.0),), ((14, 2.0),), ((0, 2.0),), ((16, 2.0),),
+                                 ((7, -1.0),), ((7, 2.0), (7, 3.0)), ((7,),)])
+def test_잘못된_item_scale_은_거부한다(bad):
+    with pytest.raises(ValueError):
+        RewardConfig(item_scale=bad)

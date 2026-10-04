@@ -196,6 +196,17 @@ def _add_action_box_sample(box: ActionBoxTracker, action: dict, out: dict, valid
     box.add(action["control"][valid_np], out["mean"].detach().cpu().numpy()[valid_np])
 
 
+def _parse_item_scale(text: str):
+    """`--item-scale 7=5` → (7, 5.0). 형식이 틀리면 argparse 가 알아듣는 오류를 낸다."""
+    parts = text.split("=")
+    try:
+        if len(parts) != 2:
+            raise ValueError
+        return int(parts[0]), float(parts[1])
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"항목=배율 꼴이어야 한다(예: 7=5): {text!r}") from None
+
+
 def _build_parser() -> argparse.ArgumentParser:
     default_cfg = PPOConfig()   # 아래 네 개 CLI 기본값의 유일한 출처 — 숫자를 여기 따로 못박지 않는다.
     default_reward_cfg = RewardConfig()   # 아래 세 개 승차감 CLI 기본값의 유일한 출처.
@@ -279,6 +290,10 @@ def _build_parser() -> argparse.ArgumentParser:
                     default=default_reward_cfg.violation_mode,
                     help="위반을 세는 규칙. once_per_section 은 대회 채점기와 같다"
                          "((항목,구간)마다 한 번, 심화는 차액만)")
+    ap.add_argument("--item-scale", type=_parse_item_scale, action="append", default=None,
+                    metavar="ITEM=SCALE",
+                    help="항목별 벌 배율(여러 번 줄 수 있다). 예: --item-scale 7=5 는 적색 위반의"
+                         " 경미·중대 벌을 5 배로 키운다(M6u). 안 주면 예전과 같다")
     ap.add_argument("--log-std-max", type=float, default=None,
                     help="정책의 σ 상한(log 스케일)을 덮어쓴다. 기본값은 체크포인트/PolicyConfig "
                          "값 그대로(0.5). M4c 는 3M 에서 결정적 모드만 무너지는 것을 봤는데 σ 와 "
@@ -313,16 +328,17 @@ def _build_cfg(a) -> PPOConfig:
 
 
 def _build_reward_cfg(a) -> RewardConfig:
-    """`RewardConfig` 는 frozen dataclass 라 `dataclasses.replace` 로 CLI 로 연 네 필드만 덮어쓴다.
+    """`RewardConfig` 는 frozen dataclass 라 `dataclasses.replace` 로 CLI 로 연 다섯 필드만 덮어쓴다.
 
     인자를 하나도 안 주면 `a.comfort_steer`/`a.comfort_accel`/`a.comfort_on_intent`/
-    `a.violation_mode` 가 이미 `RewardConfig()` 자신의 기본값이므로(위 `_build_parser` 참고)
-    이 함수가 만드는 `cfg` 는 `RewardConfig()` 와 완전히 같다 — 기본 동작이 안 바뀐다
-    (`_build_cfg` 와 같은 패턴).
+    `a.violation_mode` 가 이미 `RewardConfig()` 자신의 기본값이고, `a.item_scale` 은 `None`
+    (→ `()`)이므로(위 `_build_parser` 참고) 이 함수가 만드는 `cfg` 는 `RewardConfig()` 와
+    완전히 같다 — 기본 동작이 안 바뀐다(`_build_cfg` 와 같은 패턴).
     """
     return dataclasses.replace(RewardConfig(), comfort_steer=a.comfort_steer,
                                comfort_accel=a.comfort_accel, comfort_on_intent=a.comfort_on_intent,
-                               violation_mode=a.violation_mode)
+                               violation_mode=a.violation_mode,
+                               item_scale=tuple(a.item_scale or ()))
 
 
 def _build_optimizer(net, cfg: PPOConfig) -> torch.optim.Optimizer:

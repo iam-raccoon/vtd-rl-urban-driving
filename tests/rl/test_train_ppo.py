@@ -427,6 +427,31 @@ def test_violation_mode_인자가_RewardConfig에_반영된다():
     assert off.violation_mode == "repeat"
 
 
+def test_item_scale_인자가_RewardConfig에_반영된다():
+    module = _load_train_ppo_module()
+    a = module._build_parser().parse_args([
+        "--out", "/tmp/불필요-존재안함", "--item-scale", "7=5", "--item-scale", "9=2.5"])
+    cfg = module._build_reward_cfg(a)
+    assert cfg.item_scale == ((7, 5.0), (9, 2.5))
+
+    off = module._build_reward_cfg(module._build_parser().parse_args(["--out", "x"]))
+    assert off.item_scale == ()
+
+
+@pytest.mark.parametrize("bad", ["7", "x=1", "7=y", "7=5=1"])
+def test_item_scale_인자_형식이_틀리면_거부한다(bad):
+    module = _load_train_ppo_module()
+    with pytest.raises(SystemExit):
+        module._build_parser().parse_args(["--out", "x", "--item-scale", bad])
+
+
+def test_item_scale_인자의_항목이_틀리면_거부한다():
+    module = _load_train_ppo_module()
+    a = module._build_parser().parse_args(["--out", "x", "--item-scale", "11=5"])
+    with pytest.raises(ValueError):
+        module._build_reward_cfg(a)
+
+
 @pytest.mark.slow
 def test_comfort_on_intent가_승차감의_표본_잡음을_줄인다(tmp_path):
     """`--comfort-on-intent` 를 켜면 실행 행동이 아니라 정책의 의도(결정적 평균)의 변화로
