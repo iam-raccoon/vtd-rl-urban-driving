@@ -3,7 +3,7 @@ import random
 import pytest
 
 from vtd_rl import rule_stack as rs
-from vtd_rl.env.reward import COLLISION_ITEMS, RewardConfig, RewardShaper, ViolationTracker
+from vtd_rl.env.reward import COLLISION_ITEMS, RewardConfig, RewardShaper, ViolationTracker, red_excess
 from vtd_rl.referee.core import Hit
 from vtd_rl.world.board import load_board, slice_board
 
@@ -348,3 +348,46 @@ def test_item_scale_목록을_줘도_튜플로_바뀌고_해시된다():
 def test_잘못된_item_scale_은_거부한다(bad):
     with pytest.raises(ValueError):
         RewardConfig(item_scale=bad)
+
+
+@pytest.mark.parametrize("red, want", [
+    (None, 0.0),
+    ((50.0, 10.0), 0.0),                     # v_ok = sqrt(4·49) = 14 > 10
+    ((10.0, 10.0), 10.0 - 6.0),              # v_ok = sqrt(4·9) = 6
+    ((0.5, 0.0), 0.0),                       # 정지선 앞에 서 있다
+    ((0.5, 3.0), 3.0),                       # 1 m 안쪽: v_ok = 0
+    ((-0.5, 3.0), 3.0),                      # 앞범퍼가 선을 조금 넘었지만 아직 '넘었다' 가 아니다
+    ((-2.0, 10.0), 0.0),                     # 이미 넘었다 — ⑦ 이 맡는다
+])
+def test_red_excess(red, want):
+    assert red_excess(red, 2.0) == pytest.approx(want)
+
+
+def test_red_profile_기본값은_꺼짐이고_항이_없다():
+    assert RewardConfig().red_profile == 0.0
+    b = h_board()
+    sh = RewardShaper(b, RewardConfig())
+    sh.reset()
+    zero = {"control": [0.0, 0.0], "turn": 0}
+    out = sh.step([], 0.0, zero, zero, "running", red=(10.0, 10.0))
+    assert "red" not in out.terms
+
+
+def test_red_profile_은_넘은_속도에_비례해_깎는다():
+    b = h_board()
+    cfg = RewardConfig(red_profile=0.1)
+    sh = RewardShaper(b, cfg)
+    sh.reset()
+    zero = {"control": [0.0, 0.0], "turn": 0}
+    out = sh.step([], 0.0, zero, zero, "running", red=(10.0, 10.0))
+    assert out.terms["red"] == pytest.approx(-0.1 * 4.0)
+    assert out.total == pytest.approx(sum(out.terms.values()))
+    calm = sh.step([], 0.0, zero, zero, "running", red=None)
+    assert calm.terms["red"] == 0.0
+
+
+@pytest.mark.parametrize("kw", [{"red_profile": -0.1}, {"red_profile": float("nan")},
+                                {"red_decel": 0.0}, {"red_decel": -1.0}, {"red_decel": float("inf")}])
+def test_잘못된_red_설정은_거부한다(kw):
+    with pytest.raises(ValueError):
+        RewardConfig(**kw)

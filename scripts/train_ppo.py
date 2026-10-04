@@ -294,6 +294,11 @@ def _build_parser() -> argparse.ArgumentParser:
                     metavar="ITEM=SCALE",
                     help="항목별 벌 배율(여러 번 줄 수 있다). 예: --item-scale 7=5 는 적색 위반의"
                          " 경미·중대 벌을 5 배로 키운다(M6u). 안 주면 예전과 같다")
+    ap.add_argument("--red-profile", type=float, default=default_reward_cfg.red_profile,
+                    help="적색 감속 곡선 벌(M6v). 적색 신호 앞에서 정지선 앞 1 m 에 설 수 있는 속도를"
+                         " 넘으면 걸음마다 넘은 속도[m/s] × 이 값을 깎는다. 0 이면 꺼짐")
+    ap.add_argument("--red-decel", type=float, default=default_reward_cfg.red_decel,
+                    help="적색 감속 곡선의 감속[m/s²]")
     ap.add_argument("--log-std-max", type=float, default=None,
                     help="정책의 σ 상한(log 스케일)을 덮어쓴다. 기본값은 체크포인트/PolicyConfig "
                          "값 그대로(0.5). M4c 는 3M 에서 결정적 모드만 무너지는 것을 봤는데 σ 와 "
@@ -328,17 +333,18 @@ def _build_cfg(a) -> PPOConfig:
 
 
 def _build_reward_cfg(a) -> RewardConfig:
-    """`RewardConfig` 는 frozen dataclass 라 `dataclasses.replace` 로 CLI 로 연 다섯 필드만 덮어쓴다.
+    """`RewardConfig` 는 frozen dataclass 라 `dataclasses.replace` 로 CLI 로 연 일곱 필드만 덮어쓴다.
 
     인자를 하나도 안 주면 `a.comfort_steer`/`a.comfort_accel`/`a.comfort_on_intent`/
-    `a.violation_mode` 가 이미 `RewardConfig()` 자신의 기본값이고, `a.item_scale` 은 `None`
-    (→ `()`)이므로(위 `_build_parser` 참고) 이 함수가 만드는 `cfg` 는 `RewardConfig()` 와
-    완전히 같다 — 기본 동작이 안 바뀐다(`_build_cfg` 와 같은 패턴).
+    `a.violation_mode`/`a.red_profile`/`a.red_decel` 이 이미 `RewardConfig()` 자신의 기본값이고,
+    `a.item_scale` 은 `None`(→ `()`)이므로(위 `_build_parser` 참고) 이 함수가 만드는 `cfg` 는
+    `RewardConfig()` 와 완전히 같다 — 기본 동작이 안 바뀐다(`_build_cfg` 와 같은 패턴).
     """
     return dataclasses.replace(RewardConfig(), comfort_steer=a.comfort_steer,
                                comfort_accel=a.comfort_accel, comfort_on_intent=a.comfort_on_intent,
                                violation_mode=a.violation_mode,
-                               item_scale=tuple(a.item_scale or ()))
+                               item_scale=tuple(a.item_scale or ()),
+                               red_profile=a.red_profile, red_decel=a.red_decel)
 
 
 def _build_optimizer(net, cfg: PPOConfig) -> torch.optim.Optimizer:

@@ -16,6 +16,23 @@ import math
 from dataclasses import dataclass, field
 
 COLLISION_ITEMS = (11, 14)       # score_fma ⑪ 장애물 충돌 · ⑭ 차량·보행자 접촉
+RED_STOP_TARGET = 1.0            # M6v — 적색 감속 곡선이 겨누는 정지 위치: 앞범퍼가 정지선 앞 1 m
+                                 # (채점기 ⑦ 정지 인정 구간 [0, 2 m) 의 가운데)
+
+
+def red_excess(red, decel: float) -> float:
+    """적색 접근 `(gap, v)` → 감속 곡선을 넘은 속도[m/s]. `red` 가 None(적색 아님)이면 0.
+
+    `gap` 은 앞범퍼에서 정지선까지[m](앞이 +). 허용 속도 `v_ok = sqrt(2·decel·max(gap−1, 0))`
+    는 정지선 앞 1 m 에 서는 등감속 곡선이다. 채점기가 '넘었다' 고 보는 −1 m 너머는 ⑦ 이 맡으므로 0.
+    """
+    if red is None:
+        return 0.0
+    gap, v = red
+    if gap < -1.0:
+        return 0.0
+    v_ok = math.sqrt(2.0 * decel * max(gap - RED_STOP_TARGET, 0.0))
+    return max(0.0, float(v) - v_ok)
 
 
 @dataclass(frozen=True)
@@ -44,6 +61,10 @@ class RewardConfig:
     # M6u — 항목별 벌 배율 `((항목, 배율), ...)`. 그 항목의 히트는 minor·major 에 배율을 곱해 센다.
     # 기본 `()` 이면 예전과 같다. 충돌 항목(⑪⑭)은 `collision` 항이 따로 물리므로 받지 않는다.
     item_scale: tuple = ()
+    # M6v — 적색 감속 곡선. 적색 신호 앞에서 허용 속도(`red_excess`)를 넘으면 걸음마다
+    # 넘은 속도[m/s] × red_profile 을 깎는다(항 `red`). 기본 0 이면 꺼짐(항도 없다, 예전과 같다).
+    red_profile: float = 0.0
+    red_decel: float = 2.0           # 곡선의 감속[m/s²]
 
     def __post_init__(self):
         pairs = []
@@ -59,6 +80,10 @@ class RewardConfig:
         if len({item for item, _ in pairs}) != len(pairs):
             raise ValueError(f"item_scale 에 같은 항목이 두 번 있다: {pairs}")
         object.__setattr__(self, "item_scale", tuple(pairs))   # frozen — 목록으로 줘도 튜플로 둔다(해시)
+        if not math.isfinite(self.red_profile) or self.red_profile < 0.0:
+            raise ValueError(f"red_profile 은 유한한 0 이상이어야 한다: {self.red_profile}")
+        if not math.isfinite(self.red_decel) or self.red_decel <= 0.0:
+            raise ValueError(f"red_decel 은 유한한 양수여야 한다: {self.red_decel}")
 
 
 @dataclass
@@ -140,7 +165,7 @@ class RewardShaper:
         self.tracker.reset()
         self._prev_intent = None
 
-    def step(self, hits, ds: float, action, prev_action, outcome: str, intent=None) -> RewardStep:
+    def step(self, hits, ds: float, action, prev_action, outcome: str, intent=None, red=None) -> RewardStep:
         cfg = self.cfg
         # 충돌 항목(⑪⑭)은 `collision` 항이 따로 −50 을 물리므로 위반 합계에서 뺀다(기존 규칙).
         # `charge` 가 감점까지 내므로, 충돌 히트를 **처음부터 갈라서** 두 번 부른다 —
@@ -181,4 +206,6 @@ class RewardShaper:
             "goal": cfg.goal_bonus if outcome == "goal" else 0.0,
             "comfort": cfg.comfort_steer * d_steer + cfg.comfort_accel * d_accel,
         }
+        if cfg.red_profile > 0.0:     # 끈 실행은 항 자체가 없다(합·로그가 예전과 같다)
+            terms["red"] = -cfg.red_profile * red_excess(red, cfg.red_decel)
         return RewardStep(sum(terms.values()), terms, collision, len(counted) + len(col_counted))

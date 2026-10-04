@@ -337,3 +337,42 @@ def test_판_고르기_갈고리가_원본을_주면_세계를_캐시한다():
     env.reset(seed=0)
     env.reset(seed=1)
     assert env.board is bs[1] and list(env._worlds) == ["H_250_500"]
+
+
+def _signal_board(mode):
+    """H 0~250 — s≈96 m 에 신호(151)가 있다. 신호 운용만 바꾼다."""
+    return slice_board(load_board(H), 0.0, 250.0, f"H_0_250_{mode}", signals=mode)
+
+
+def test_red_gap_은_적색일_때만_앞범퍼_거리와_속도를_준다():
+    env = VtdDriveEnv([_signal_board("always_red")])
+    env.reset(seed=0)
+    env.step({"control": np.array([0.0, 0.0], dtype=np.float32), "turn": 0})
+    gap, v = env._red_gap()
+    sig_s = min(sig.s for sig in env.world.reporter.signals)
+    assert gap == pytest.approx(sig_s - env._info.s - rs.score_fma.FRONT)
+    assert v == pytest.approx(env.world.ego.v)
+    env.close()
+    green = VtdDriveEnv([_signal_board("always_green")])
+    green.reset(seed=0)
+    green.step({"control": np.array([0.0, 0.0], dtype=np.float32), "turn": 0})
+    assert green._red_gap() is None
+    green.close()
+
+
+def test_red_profile_을_켜면_적색을_달려_지날_때_red_항이_깎인다():
+    def run(cfg):
+        env = VtdDriveEnv([_signal_board("always_red")], EnvConfig(reward=cfg))
+        env.reset(seed=0)
+        reds = []
+        for _ in range(400):
+            _o, _r, term, trunc, info = env.step({"control": np.array([0.0, 1.0], dtype=np.float32), "turn": 0})
+            reds.append(info["reward_terms"].get("red"))
+            if term or trunc or info["s"] > 110.0:
+                break
+        env.close()
+        return reds
+    on = run(RewardConfig(red_profile=0.1))
+    assert min(on) < 0.0
+    off = run(RewardConfig())
+    assert all(r is None for r in off)

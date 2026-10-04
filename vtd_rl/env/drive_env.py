@@ -23,6 +23,7 @@ from vtd_rl.env.reward import COLLISION_ITEMS, RewardConfig, RewardShaper
 from vtd_rl.env.tags import RL, world_cap_by
 from vtd_rl.referee.core import Referee
 from vtd_rl.referee.rows import RowRecorder
+from vtd_rl.world.signals import PASSED_MARGIN
 from vtd_rl.world.world import World, WorldConfig
 
 RUNNING = "running"
@@ -140,8 +141,9 @@ class VtdDriveEnv(gym.Env):
                 break
         if outcome != RUNNING or any(h.item in COLLISION_ITEMS for h in hits):
             hits += self.referee.finish()          # 남은 대기 판정까지 이 걸음의 보상에 넣는다
+        red = self._red_gap() if self.cfg.reward.red_profile > 0.0 else None
         shaped = self._shaper.step(hits, max(0.0, self._info.s - s0), action, self._prev_action,
-                                   outcome, intent=self.intent)
+                                   outcome, intent=self.intent, red=red)
         self._prev_action = {"control": np.asarray(action["control"], dtype=np.float32).copy(),
                              "turn": int(action["turn"])}
         terminated = outcome in ("goal", "offroad") or shaped.collision
@@ -159,6 +161,21 @@ class VtdDriveEnv(gym.Env):
             info["result"] = self._finish()
         obs = build_observation(self.world, self.state, self._info, self._prev_pair(), self.cfg.obs)
         return obs, float(shaped.total), bool(terminated), bool(truncated), info
+
+    def _red_gap(self):
+        """신호가 적색이면 `(앞범퍼~그 신호 정지선 거리[m], 속도[m/s])`, 아니면 None — M6v 감속 곡선용.
+
+        정지선 s 는 세계가 보고하는 신호(`SignalReporter` 와 같은 규칙: 같은 tl_id, 뒷축이 선을
+        PASSED_MARGIN 넘기 전)에서 찾고, 앞범퍼 오프셋은 채점기와 같은 `score_fma.FRONT` 다.
+        """
+        st = self.state
+        if self._info is None or st.tl_id <= 0 or st.tl_state != rs.TL_RED:
+            return None
+        s = self._info.s
+        for sig in self.world.reporter.signals:          # s 순서
+            if sig.tl_id == st.tl_id and sig.s + PASSED_MARGIN >= s:
+                return sig.s - s - rs.score_fma.FRONT, float(self.world.ego.v)
+        return None
 
     def _frozen_step(self):
         """판이 이미 끝난 뒤 온 step() — 세계·심판·행 기록기를 더 밟지 않고 마지막 상태를 그대로 준다.
