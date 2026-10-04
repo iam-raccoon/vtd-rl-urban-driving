@@ -185,3 +185,14 @@ def window_label(variants: int, offset: int) -> str:
     if variants == 1:
         return f"v{offset}"
     return f"v{offset}~v{offset + variants - 1}"
+
+
+def cache_key(board) -> str:
+    """색인·심판 입력 캐시의 열쇠 — 판에 `cache_key` 가 있으면 그것, 없으면 판 이름(예전과 같다).
+
+    M6f: 리셋마다 새로 짓는 변종 판은 이름(`course_A@v123#stage3`)이 끝없이 새로 생긴다. 색인
+    (`env/board_index.py`)과 심판 입력(`referee/core.py::context_for`)은 **경로만** 본다 —
+    경로·차로계획·신호 지도이고 액터는 안 본다. 그래서 같은 경로 파일의 변종은 `cache_key` 에
+    경로를 적어 캐시 한 칸을 같이 쓴다. 이름을 열쇠로 두면 두 캐시가 끝없이 자란다.
+    """
+    return getattr(board, "cache_key", None) or board.name

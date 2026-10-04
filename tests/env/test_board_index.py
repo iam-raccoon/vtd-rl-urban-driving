@@ -66,3 +66,17 @@ def test_코스_G_보호구역():
     # 보호구역이 슬라이스 끝까지 이어짐
     assert bi.zone[-1] is True
     assert any(bi.zone)  # 슬라이스 안에 보호구역이 있음
+
+
+H_ENTRY = {"name": "course_H", "route": "routes/HL_FMA_NEW_H.json", "lane": "routes/HL_FMA_NEW_H_lane.json"}
+
+
+def test_cache_key_가_같으면_색인을_같이_쓴다():
+    a = slice_board(load_board(H_ENTRY), 0.0, 250.0, "H_ck_a")
+    b = slice_board(load_board(H_ENTRY), 0.0, 250.0, "H_ck_b")
+    clear_board_index_cache()
+    assert board_index(a) is not board_index(b)          # 열쇠가 없으면 예전처럼 이름마다 따로
+    a.cache_key = b.cache_key = "H|0|250"
+    clear_board_index_cache()
+    assert board_index(a) is board_index(b)
+    clear_board_index_cache()

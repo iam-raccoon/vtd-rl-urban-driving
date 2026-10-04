@@ -54,3 +54,17 @@ def test_스펙_보상표는_채점기_항목_번호와_맞다():
             if line.startswith("|") and "·" in line}
     assert "10" not in rows["경미 위반"].replace("·", " ").split()   # ⑩ 보행자 양보는 중대만
     assert "10" in rows["중대 위반"].replace("·", " ").split()
+
+
+def test_cache_key_를_같이_쓰는_판은_심판_입력을_같이_쓰되_판은_자기_것이다():
+    clear_context_cache()
+    a = slice_board(load_board(H), 0.0, 250.0, "H_ctx_a")
+    b = slice_board(load_board(H), 0.0, 250.0, "H_ctx_b")
+    assert context_for(a).board is a and context_for(b).board is b
+    assert context_for(a).secs is not context_for(b).secs   # 열쇠가 없으면 이름마다 따로
+    clear_context_cache()
+    a.cache_key = b.cache_key = "H|0|250"
+    ca, cb = context_for(a), context_for(b)
+    assert ca.secs is cb.secs and ca.tl_stops is cb.tl_stops   # 비싼 입력은 같이 쓴다
+    assert ca.board is a and cb.board is b                     # 판은 자기 것
+    clear_context_cache()

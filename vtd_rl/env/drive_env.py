@@ -61,6 +61,10 @@ class VtdDriveEnv(gym.Env):
         # 콜러블이 아니라 평범한 속성인 이유: 학습은 AsyncVectorEnv(별도 프로세스)를 쓰고,
         # gymnasium 의 `set_attr()`은 값은 프로세스 경계를 넘겨주지만 람다는 피클이 안 된다.
         self.intent = None
+        # M6f — 판 고르기를 넘겨받는 콜러블 `rng -> (판, 새로_지은_판인가)`. 안 걸려 있으면(기본)
+        # 예전처럼 `self.boards` 에서 고른다. 이름을 준 리셋(`options={"board": ...}`)은 늘 목록에서
+        # 찾는다. 새로 지은 판은 이름이 리셋마다 달라 세계를 캐시하지 않는다(캐시가 끝없이 자란다).
+        self.board_sampler = None
         self.board = self.world = self.referee = self.state = None
         self._worlds: dict = {}          # 판마다 세계를 다시 짓지 않는다(신호 찾기가 판당 수십 ms)
         self._episode = 0
@@ -77,20 +81,24 @@ class VtdDriveEnv(gym.Env):
         super().reset(seed=seed)
         self._close_recorder()
         name = (options or {}).get("board")
+        fresh = False
         if name is not None:
             try:
                 self.board = next(b for b in self.boards if b.name == name)
             except StopIteration:
                 names = [b.name for b in self.boards]
                 raise ValueError(f"판을 찾을 수 없다: {name!r} (있는 판: {names})") from None
+        elif self.board_sampler is not None:
+            self.board, fresh = self.board_sampler(self.np_random)
         else:
             self.board = self.boards[int(self.np_random.integers(len(self.boards)))]
         world_seed = int(self.np_random.integers(2 ** 31 - 1))
-        self.world = self._worlds.get(self.board.name)
+        self.world = None if fresh else self._worlds.get(self.board.name)
         if self.world is None:
             idx = board_index(self.board)
-            self.world = self._worlds[self.board.name] = World(
-                self.board, self.cfg.world, signals=idx.signals, seed=world_seed)
+            self.world = World(self.board, self.cfg.world, signals=idx.signals, seed=world_seed)
+            if not fresh:
+                self._worlds[self.board.name] = self.world
         # 세계 캐시의 열쇠는 판 **이름**이다 — 이름만 같고 다른 판이 섞이면 관측·심판은 이 판을,
         # 세계는 저 판을 보게 된다. 조용히 갈라지지 않게 여기서 못을 박는다.
         assert self.world.board is self.board, f"세계 캐시가 다른 판을 준다: {self.board.name}"

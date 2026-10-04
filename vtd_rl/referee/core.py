@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from vtd_rl import rule_stack as rs
 from vtd_rl.referee.oracle import make_lc_at, make_lim_at, match_inputs
 from vtd_rl.referee.sections import FastSections
+from vtd_rl.world.board import cache_key
 
 sf = rs.score_fma
 
@@ -93,12 +94,17 @@ def context_for(board, sections=5) -> Context:
 
     match_inputs 는 횡단보도를 경로 전체와 비교하고 FastSections 는 격자를 짓는다(판마다 40~99 ms).
     환경은 리셋마다 심판을 새로 만들기 때문에 그대로 두면 그 비용을 매 판 낸다.
+
+    열쇠는 `cache_key(board)` 다(M6f, 없으면 판 이름 — 예전과 같다). 열쇠를 같이 쓰는 판(같은
+    경로의 변종)은 비싼 입력(구간·제한속도·차로변경·신호)을 같이 쓰되, `Context.board` 는
+    **지금 판**이어야 한다. 열쇠가 이름인 예전 판은 캐시된 판이 곧 이 판이라 그대로 둔다.
     """
-    key = (board.name, sections, len(board.route.pts))
+    key = (cache_key(board), sections, len(board.route.pts))
     cached = _CONTEXT_CACHE.get(key)
     if cached is None:
         cached = _CONTEXT_CACHE[key] = Context.build(board, sections)
-    return Context(cached.board, cached.sections, cached.secs, cached.lim_at, cached.lc_at,
+    owner = board if getattr(board, "cache_key", None) else cached.board
+    return Context(owner, cached.sections, cached.secs, cached.lim_at, cached.lc_at,
                    cached.tl_stops, cached.cws)
 
 

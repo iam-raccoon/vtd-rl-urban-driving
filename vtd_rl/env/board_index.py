@@ -6,6 +6,7 @@ import bisect
 import math
 
 from vtd_rl import rule_stack as rs
+from vtd_rl.world.board import cache_key
 from vtd_rl.world.signals import route_signals, LINE_MIN_COS
 
 NEAR_ROUTE = 8.0          # 경로에서 이 안에 있는 것만 경로 위의 것으로 본다[m]
@@ -89,7 +90,9 @@ def clear_board_index_cache():
 
 
 def board_index(board) -> BoardIndex:
-    key = (board.name, len(board.route.pts))
+    # 열쇠는 `cache_key(board)`(없으면 판 이름 — 예전과 같다). 같은 경로의 변종끼리 색인을 같이
+    # 쓴다(M6f) — 색인은 경로·차로계획만 보고, `plan_at` 이 읽는 차로계획도 같은 경로면 같다.
+    key = (cache_key(board), len(board.route.pts))
     idx = _CACHE.get(key)
     if idx is None:
         idx = _CACHE[key] = BoardIndex(board)

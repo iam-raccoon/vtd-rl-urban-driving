@@ -299,3 +299,41 @@ def test_구간당_한_번_모드의_위반_합계가_채점기_감점과_같다
         assert total == pytest.approx(expect, abs=1e-6), (total, expect)
     finally:
         env.close()
+
+
+def test_판_고르기_갈고리가_없으면_예전처럼_고른다():
+    e1, e2 = VtdDriveEnv(boards()), VtdDriveEnv(boards())
+    e2.board_sampler = None
+    for seed in (0, 3, 7):
+        o1, _ = e1.reset(seed=seed)
+        o2, _ = e2.reset(seed=seed)
+        assert e1.board.name == e2.board.name
+        for k in o1:
+            assert np.array_equal(np.asarray(o1[k]), np.asarray(o2[k])), k
+
+
+def test_판_고르기_갈고리가_새로_지은_판을_쓰고_세계를_캐시하지_않는다():
+    env = VtdDriveEnv(boards())
+    made = []
+
+    def sampler(rng):
+        b = slice_board(load_board(H), 0.0, 250.0, f"H_fresh_{len(made)}")
+        made.append(b)
+        return b, True
+
+    env.board_sampler = sampler
+    for seed in range(3):
+        env.reset(seed=seed)
+        assert env.board is made[-1] and env.world.board is made[-1]
+    assert len(env._worlds) == 0
+    env.reset(seed=0, options={"board": "H_0_250"})     # 이름을 주면 예전처럼 목록에서, 캐시도 한다
+    assert env.board.name == "H_0_250" and len(env._worlds) == 1
+
+
+def test_판_고르기_갈고리가_원본을_주면_세계를_캐시한다():
+    bs = boards()
+    env = VtdDriveEnv(bs)
+    env.board_sampler = lambda rng: (bs[1], False)
+    env.reset(seed=0)
+    env.reset(seed=1)
+    assert env.board is bs[1] and list(env._worlds) == ["H_250_500"]
