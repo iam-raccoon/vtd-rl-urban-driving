@@ -127,6 +127,7 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 - [docs/reports/m6b-ppo-anchor.md](docs/reports/m6b-ppo-anchor.md) — **KL 앵커를 단 PPO 가 처음으로 출발점을 크게 넘었다**: 계수 0.03 에서 ③b 선택 창 68.5 → 97.2% · 보고 창 59.7 → 92.6%(①② 100% 유지). 앵커 없이도 고른 체크포인트는 오르지만 끝점이 출렁인다. 덤: ③a 81.5 → 97.7%, ③ 전체 8.8 → 37.0%(선택 창, 학습에 안 쓴 단계)
 - [docs/reports/m6c-ppo-stage3.md](docs/reports/m6c-ppo-stage3.md) — **앵커 PPO 를 장애물 여럿 단계로 넓혔다**: M6b 그물에서 ③a·③ 전체까지 학습해 ③ 전체 선택 창 37.0 → 68.5% · 보고 창 39.4 → 64.8%(③a·③b·①② 유지). 같은 보고 창에서 모방 최고(M4y) 3.3% → 64.8%. 남은 실패는 전부 충돌이고 1 위는 정지차 바로 뒤 라바콘
 - [docs/reports/m6d-ppo-chain.md](docs/reports/m6d-ppo-chain.md) — 같은 판으로 앵커 PPO 를 한 번 더 이어도 **차이 없다**(③ 전체 선택 창 68.5 → 71.3%(계수 0.03) · 66.2%(0.01)), 시드 사이 편차만 커진다 → 다음은 변종 판으로 학습
+- [docs/reports/m6e-ppo-variants.md](docs/reports/m6e-ppo-variants.md) — **변종 판(v0~v3)으로 학습하자 ③ 전체가 올랐다**: 선택 창 68.5 → 76.4% · 보고 창 64.8 → 71.8%(3/3), 같은 조건 원본 판만(M6d A 71.3 · 66.7%)보다 높고 끝점도 안정. ③a·③b·①② 유지. 남은 1 위 실패는 정지차 직후 라바콘
 
 ### 여기까지 온 곳
 **PPO 는 M3 모방 학생을 한 번도 못 넘었다 — 학습의 어느 시점에서도.** 목표 판정은 M4a 부터 지금까지
