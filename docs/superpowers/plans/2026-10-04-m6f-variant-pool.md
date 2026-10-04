@@ -40,7 +40,7 @@
 
 ```
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 env -u PYTHONPATH .venv/bin/python scripts/train_ppo.py \
-  --out runs/omen/2026-10-04-m6f-$ARM-s$S --init runs/omen/2026-10-04-m6c-A-s$S/policy-best.pt \
+  --out runs/omen/2026-10-04-m6f-P$POOL-s$S --init runs/omen/2026-10-04-m6c-A-s$S/policy-best.pt \
   --curricula curricula/stage1.json curricula/stage2.json curricula/stage3a.json curricula/stage3b.json curricula/stage3.json \
   --train-variant-pool $POOL \
   --steps 2000000 --eval-every 500000 --eval-seeds 1 --final-eval-seeds 3 --envs 10 \
@@ -72,6 +72,15 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 env -u PYTHONPATH .venv/bin/python scripts/t
   - "변종을 늘리면 4 개보다 못하다": 선택 창 평균 ≤ 71.4%(M6e −5).
   - 아니면 "4 개와 비슷하다".
 - 곁들여(판정과 별도): 시드 사이 폭, 마지막 체크포인트 숫자, ①② 점수, 고른 그물의 ③ 전체 실패 갈래(진단 스크립트).
+
+## 실행 전 보강 (최종 리뷰 반영, 결과를 보기 전에 적었다)
+
+- **P1000 은 평가 배치를 s 방향으로 거의 덮는다.**
+  - 변종의 공통 s 오프셋은 황금비 저불일치 수열이다(`world/place.py::s_offset`). 변종 번호가 많아지면 범위(±40 m)를 촘촘히 채운다.
+  - 리뷰 실측: P1000 의 학습 s 오프셋은 모든 코스에서 평가 창 v4~v11 의 오프셋과 0.03 m 안이다. P32 는 1.5~2.4 m 간격이다.
+  - 횡 위치는 `(이름, 번호)` 마다 따로 흔들어 같은 배치는 아니다. 그래도 액터 하나 단계(③a·③b)에서는 P1000 의 "안 쓴 창" 이 사실상 분포 안이다.
+  - 그래서 성적표는 P1000 이 4 개보다 나아도 "일반화" 가 아니라 **"배치를 더 촘촘히 덮은 효과"** 로 적는다. 장애물 여럿 단계(③ 전체)는 오프셋 하나에 횡 위치 4~5 개가 겹쳐 새 조합이 되므로, 판정은 ③ 전체로 한다(위 기준 그대로).
+- M6e 학습 판 수를 바로잡는다. ①② 를 4 번 되풀이하므로 목록은 120 칸(단계마다 24)이고, 서로 다른 판은 84 개다. 단계 비율 1/5 은 맞다.
 
 ## Global Constraints
 
