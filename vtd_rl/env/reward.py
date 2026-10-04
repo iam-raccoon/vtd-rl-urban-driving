@@ -207,5 +207,5 @@ class RewardShaper:
             "comfort": cfg.comfort_steer * d_steer + cfg.comfort_accel * d_accel,
         }
         if cfg.red_profile > 0.0:     # 끈 실행은 항 자체가 없다(합·로그가 예전과 같다)
-            terms["red"] = -cfg.red_profile * red_excess(red, cfg.red_decel)
+            terms["red"] = 0.0 - cfg.red_profile * red_excess(red, cfg.red_decel)   # 0.0− : 적색 아닌 걸음이 −0.0 이 안 되게
         return RewardStep(sum(terms.values()), terms, collision, len(counted) + len(col_counted))
