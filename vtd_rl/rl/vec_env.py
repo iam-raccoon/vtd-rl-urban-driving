@@ -10,9 +10,14 @@ from gymnasium.vector import AsyncVectorEnv, SyncVectorEnv
 
 from vtd_rl.env.drive_env import EnvConfig, VtdDriveEnv
 from vtd_rl.policy.encode import VEC_KEYS
+from vtd_rl.rl.variant_pool import VariantSampler
 from vtd_rl.world.board import load_curriculum, load_window
 
 REPO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
+
+
+def _path(rel):
+    return rel if os.path.isabs(rel) else os.path.join(REPO, rel)
 
 
 def _boards(curricula, variants: int = 1):
@@ -37,7 +42,7 @@ def _boards(curricula, variants: int = 1):
         raise ValueError(f"variants 는 1 이상이어야 한다: {variants!r}")
     out = []
     for rel in curricula:
-        path = rel if os.path.isabs(rel) else os.path.join(REPO, rel)
+        path = _path(rel)
         stage = os.path.splitext(os.path.basename(path))[0]
         if variants == 1:
             _name, boards = load_curriculum(path)
@@ -50,16 +55,26 @@ def _boards(curricula, variants: int = 1):
     return out
 
 
-def make_env_fn(curricula, config: EnvConfig | None, seed: int, rank: int, variants: int = 1):
+def make_env_fn(curricula, config: EnvConfig | None, seed: int, rank: int, variants: int = 1,
+                variant_pool: int | None = None):
     def _make():
         # 시드는 make_vec_env 의 reset(seed=[...]) 이 준다 — 여기서 리셋하면 세계를 한 번 더 짓는다.
-        return VtdDriveEnv(_boards(curricula, variants), config or EnvConfig())
+        boards = _boards(curricula, variants)
+        env = VtdDriveEnv(boards, config or EnvConfig())
+        if variant_pool is not None:
+            # M6f — 리셋마다 변종 판을 새로 짓는다(`variant_pool.py`). 고르개는 워커 프로세스 안에서
+            # 만든다(콜러블은 피클할 필요가 없다).
+            env.board_sampler = VariantSampler([_path(c) for c in curricula], variant_pool, boards)
+        return env
     return _make
 
 
 def make_vec_env(curricula, n_envs: int, config: EnvConfig | None = None, seed: int = 0,
-                 asynchronous: bool = True, variants: int = 1):
-    fns = [make_env_fn(tuple(curricula), config, seed, i, variants) for i in range(n_envs)]
+                 asynchronous: bool = True, variants: int = 1, variant_pool: int | None = None):
+    if variant_pool is not None and variants != 1:
+        raise ValueError("variants 와 variant_pool 은 같이 못 쓴다 — 미리 지은 변종 목록과 리셋마다"
+                         " 짓는 변종 풀은 다른 방식이다")
+    fns = [make_env_fn(tuple(curricula), config, seed, i, variants, variant_pool) for i in range(n_envs)]
     venv = AsyncVectorEnv(fns) if asynchronous else SyncVectorEnv(fns)
     venv.reset(seed=[seed + i for i in range(n_envs)])
     return venv

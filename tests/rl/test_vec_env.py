@@ -137,3 +137,22 @@ def test_변종_판으로도_벡터_환경이_돈다():
         assert reward.shape == (2,)
     finally:
         venv.close()
+
+
+def test_변종_풀로도_벡터_환경이_돈다():
+    venv = make_vec_env(("curricula/stage1.json", "curricula/stage3b.json"), n_envs=2, seed=0,
+                        asynchronous=False, variant_pool=8)
+    try:
+        assert all(e.board_sampler is not None for e in venv.envs)
+        obs, _info = venv.reset(seed=0)
+        for _ in range(3):
+            obs, reward, term, trunc, info = venv.step(venv.action_space.sample())
+        assert reward.shape == (2,)
+    finally:
+        venv.close()
+
+
+def test_변종_수와_변종_풀은_같이_못_쓴다():
+    with pytest.raises(ValueError, match="variant_pool"):
+        make_vec_env(("curricula/stage1.json",), n_envs=1, seed=0, asynchronous=False,
+                     variants=2, variant_pool=8)

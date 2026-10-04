@@ -249,6 +249,10 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="M6e — 액터가 있는 학습 판을 수집 창 변종 v0~v{N-1} 로 넓힌다(1~4). 기본 1 은"
                          " 지금과 같다(원본 판만). ①② 는 같은 판을 N 번 되풀이해 단계 비율을 지킨다."
                          " 5 이상이면 보고 창(v4~v7)과 겹쳐 거부한다.")
+    ap.add_argument("--train-variant-pool", type=int, default=None,
+                    help="M6f — 리셋마다 변종 판을 새로 지어 학습한다. 풀은 v0~v3 + v12 부터 N 개"
+                         "(평가 창 v4~v11 은 안 쓴다). 5 이상. --train-variants 와 같이 못 쓴다."
+                         " 기본값 None 은 지금과 같다.")
     ap.add_argument("--entropy-mode", choices=ENTROPY_MODES, default=None,
                     help="정책의 entropy_mode(net.py PolicyConfig 참고)를 덮어쓴다. 기본값"
                          " None 은 체크포인트에 저장된 값을 그대로 쓴다(--init 이 없으면"
@@ -412,6 +416,11 @@ def main():
     if a.train_variants > 4:
         ap.error("--train-variants 는 4 이하여야 한다 — 5 이상이면 학습 변종에 v4 가 들어가"
                  " 보고 창(v4~v7)과 겹친다")
+    if a.train_variant_pool is not None:
+        if a.train_variant_pool < 5:
+            ap.error("--train-variant-pool 은 5 이상이어야 한다(4 이하는 --train-variants 를 써라)")
+        if a.train_variants != 1:
+            ap.error("--train-variant-pool 과 --train-variants 는 같이 못 쓴다")
     if a.smoke:
         a.envs, a.steps, a.rollout = 2, 4000, 64
         a.eval_seeds, a.final_eval_seeds = 1, 1
@@ -454,7 +463,7 @@ def main():
         # venv 는 서브프로세스(비동기 벡터 환경)를 띄운다 — `--init` 오타 등으로 그 아래 어떤
         # 준비 코드가 죽어도 finally 가 반드시 타도록 venv 생성부터 이 try 안에 둔다.
         venv = make_vec_env(a.curricula, a.envs, train_env_cfg, seed=a.seed, asynchronous=not a.smoke,
-                            variants=a.train_variants)
+                            variants=a.train_variants, variant_pool=a.train_variant_pool)
         net = (ActorCritic.from_policy(a.init, device=dev) if a.init else ActorCritic()).to(dev)
         net = _apply_entropy_mode(net, a.entropy_mode)   # 두 경로(이식/새로 시작) 모두 여기 합류한 뒤 지난다
         net = _apply_log_std_max(net, a.log_std_max)     # M4d — σ 상한 개입(결정적 모드 붕괴 원인 분리용)

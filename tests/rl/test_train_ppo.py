@@ -1019,3 +1019,53 @@ def test_train_variants_가_벡터_환경까지_닿는다(tmp_path, monkeypatch)
     with open(tmp_path / "run" / "log.jsonl", encoding="utf-8") as f:
         rows = [json.loads(line) for line in f if line.strip()]
     assert rows[0]["hparams"]["train_variants"] == 2
+
+
+def test_train_variant_pool_기본값은_None():
+    mod = _load_train_ppo_module()
+    a = mod._build_parser().parse_args(["--out", "/tmp/불필요-존재안함"])
+    assert a.train_variant_pool is None
+
+
+def test_train_variant_pool_잘못이면_거부한다(capsys):
+    import sys
+    mod = _load_train_ppo_module()
+    old_argv = sys.argv
+    try:
+        for bad, msg in ((["train_ppo.py", "--smoke", "--out", "/tmp/불필요-존재안함", "--train-variant-pool", "4"],
+                          "5 이상"),
+                         (["train_ppo.py", "--smoke", "--out", "/tmp/불필요-존재안함", "--train-variant-pool", "8",
+                           "--train-variants", "2"],
+                          "같이")):
+            sys.argv = bad
+            with pytest.raises(SystemExit):
+                mod.main()
+            assert msg in capsys.readouterr().err
+    finally:
+        sys.argv = old_argv
+
+
+@pytest.mark.slow
+def test_train_variant_pool_이_벡터_환경까지_닿는다(tmp_path, monkeypatch):
+    import sys
+    mod = _load_train_ppo_module()
+    seen = {}
+    real = mod.make_vec_env
+
+    def spy(*args, **kwargs):
+        seen["variant_pool"] = kwargs.get("variant_pool")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(mod, "make_vec_env", spy)
+    old_argv = sys.argv
+    try:
+        sys.argv = ["train_ppo.py", "--smoke", "--out", str(tmp_path / "run"), "--seed", "0",
+                    "--curricula", "curricula/stage1.json", "curricula/stage2.json",
+                    "curricula/stage3b.json", "--train-variant-pool", "8"]
+        mod.main()
+    finally:
+        sys.argv = old_argv
+    assert seen["variant_pool"] == 8
+    with open(tmp_path / "run" / "log.jsonl", encoding="utf-8") as f:
+        rows = [json.loads(line) for line in f if line.strip()]
+    assert rows[0]["hparams"]["train_variant_pool"] == 8
