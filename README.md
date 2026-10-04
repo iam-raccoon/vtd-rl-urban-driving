@@ -140,6 +140,7 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 - [docs/reports/m6o-best-failures.md](docs/reports/m6o-best-failures.md) — 최고 그물의 남은 실패(384 판 중 50 판)는 **전부 두 코스**: course_A 라바콘 줄 바로 뒤 신호 교차로(64 판 모두 적색 위반, 40% 가 교차로 안에서 멈춤)와 course_G 마지막 정지차. 나머지 코스 넷은 100%
 - [docs/reports/m6p-courseA-dagger.md](docs/reports/m6p-courseA-dagger.md) — course_A 선생님 라벨(DAgger)만으로 앵커 모방 다듬기: EMA 그물은 course_A 40.6 → 87.5%(멈춤 0) 지만 **다른 코스를 잃어**(course_A 밖 308 → 246/320) 지킴선 못 지킴 → 최고 그물 그대로. 좁은 데이터에는 앵커 계수 2 가 모자라다
 - [docs/reports/m6q-ppo-imitation.md](docs/reports/m6q-ppo-imitation.md) — PPO 에 course_A 라벨 보조 모방을 섞으면 **무너진다**(앵커 KL 2 대). 모방 없이 이어 돌린 PPO 가 course_A 를 고친다: 후보 새 시험 창 89.3% 대 최고 그물 86.5%(+2.8, 교체 문턱 3 점 미달) → 최고 그물 그대로
+- [docs/reports/m6r-continue-seeds.md](docs/reports/m6r-continue-seeds.md) — **새 최고 그물**: 최고 그물에서 모방 없이 PPO 를 시드 여섯으로 더 이어 돌려 체크포인트 32 개 중 큰 창으로 고름(M6r 시드 4 · 50 만). 새 시험 창 ③ 전체 **96.4%**(앞선 최고 90.1%, 같은 창), ①②③a③b 100%. course_A 멈춤 0
 
 ### 여기까지 온 곳
 **PPO 는 M3 모방 학생을 한 번도 못 넘었다 — 학습의 어느 시점에서도.** 목표 판정은 M4a 부터 지금까지
