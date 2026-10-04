@@ -41,11 +41,13 @@ class LaneGeometryJudge:
         self.walk = SpanTracker(_over("sidewalk_intrusion", sf.WALK_M), sf.WALK_S, emit="reach")
         self.edge_t0, self.edge_secs = None, set()    # 낸 ③ 물림의 시작 t · 그 물림에서 이미 낸 채점 구간
         self.n_edge, self.n_solid = {}, {}
-        # M6x — 보상용(판정에는 안 쓴다). ③ 물림으로 세는 행(`_edge_pred` 가 참)마다 0.1 m 를 넘는
-        # 침범 깊이를 더한다. 행은 2.5 초 붙잡혔다 풀릴 때 판정되므로 차로변경 면책이 이미 들어 있다.
+        # M6x — 보상용(판정에는 안 쓴다). `_edge_pred` 가 참인 행(차로변경·변경 구역 면책을 뺀 0.1 m 이상
+        # 침범 — 0.3 초 미만이라 ③ 이 안 나는 짧은 물림도 포함)마다 0.1 m 를 넘는 깊이를 더한다.
+        # 행은 2.5 초 붙잡혔다 풀릴 때 판정되므로 차로변경 면책이 이미 들어 있다.
         self.edge_excess = 0.0
 
     def _edge_pred(self, r):
+        # 부수효과(M6x `edge_excess`)가 있다 — 행마다 한 번(SpanTracker.update 전용) 불려야 한다.
         if not _over("lane_intrusion", sf.LANE_EDGE_M)(r):
             return False
         if self.ctx.lc_at(r["x"], r["y"]):

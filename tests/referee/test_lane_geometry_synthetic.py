@@ -190,6 +190,7 @@ def _excess(rows, lc_at):
 def test_edge_excess_는_채점기가_세는_물림만_쌓는다():
     # 물림 8 행(깊이 0.5 m) — 2.5 초 안에 차로변경이 오면 면책돼 0, 멀면 8 × (0.5 − 0.1).
     assert _excess(_edge_then_change_rows(gap=1.0), _no_lc) == 0.0
+    assert _excess(_edge_then_change_rows(gap=3.0), lambda x, y: True) == 0.0   # 차로변경 구역 면책
     far = _excess(_edge_then_change_rows(gap=3.0), _no_lc)
     assert abs(far - 8 * (0.5 - sf.LANE_EDGE_M)) < 1e-9
 
