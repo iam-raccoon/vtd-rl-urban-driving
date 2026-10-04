@@ -12,6 +12,7 @@
   경미→중대로 심화되면 차액만 문다(`ViolationTracker._charge_once`). 이 모드에서는
   `repeat_gap` 을 안 쓴다.
 """
+import math
 from dataclasses import dataclass, field
 
 COLLISION_ITEMS = (11, 14)       # score_fma ⑪ 장애물 충돌 · ⑭ 차량·보행자 접촉
@@ -46,14 +47,14 @@ class RewardConfig:
 
     def __post_init__(self):
         pairs = []
-        for pair in self.item_scale:
+        for pair in (self.item_scale or ()):   # None(`--item-scale` 을 안 준 실행의 hparams)도 ()
             if len(pair) != 2:
                 raise ValueError(f"item_scale 은 (항목, 배율) 짝이어야 한다: {pair!r}")
             item, scale = int(pair[0]), float(pair[1])
             if not 1 <= item <= 15 or item in COLLISION_ITEMS:
                 raise ValueError(f"item_scale 항목은 1~15 이고 충돌 항목 {COLLISION_ITEMS} 가 아니어야 한다: {item}")
-            if scale < 0.0:
-                raise ValueError(f"item_scale 배율은 0 이상이어야 한다: {scale}")
+            if not math.isfinite(scale) or scale < 0.0:
+                raise ValueError(f"item_scale 배율은 유한한 0 이상이어야 한다: {scale}")
             pairs.append((item, scale))
         if len({item for item, _ in pairs}) != len(pairs):
             raise ValueError(f"item_scale 에 같은 항목이 두 번 있다: {pairs}")

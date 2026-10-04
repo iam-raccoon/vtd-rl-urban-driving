@@ -343,7 +343,8 @@ def test_item_scale_목록을_줘도_튜플로_바뀌고_해시된다():
 
 
 @pytest.mark.parametrize("bad", [((11, 5.0),), ((14, 2.0),), ((0, 2.0),), ((16, 2.0),),
-                                 ((7, -1.0),), ((7, 2.0), (7, 3.0)), ((7,),)])
+                                 ((7, -1.0),), ((7, 2.0), (7, 3.0)), ((7,),),
+                                 ((7, float("nan")),), ((7, float("inf")),)])
 def test_잘못된_item_scale_은_거부한다(bad):
     with pytest.raises(ValueError):
         RewardConfig(item_scale=bad)

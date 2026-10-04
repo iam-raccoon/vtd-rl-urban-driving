@@ -141,7 +141,13 @@ def _hparam_diff(hparams) -> str:
     if not hparams:
         return "기록 안 됨(이 실행은 hparams 로깅 이전 버전으로 돌았다)"
     defaults = {**dataclasses.asdict(PPOConfig()), **dataclasses.asdict(RewardConfig())}
-    diffs = [f"{k}={hparams[k]}" for k in CLI_HPARAM_KEYS if k in hparams and hparams[k] != defaults[k]]
+    # 기본값이 빈 튜플인 필드(`item_scale`)는 안 준 실행이 hparams 에 `None`(JSON `null`)으로 남는다 —
+    # `None != ()` 라 그대로 비교하면 기본 실행마다 "item_scale=None" 이 바뀐 것처럼 찍힌다.
+    def _norm(k):
+        v = hparams[k]
+        return () if defaults[k] == () and not v else v
+
+    diffs = [f"{k}={hparams[k]}" for k in CLI_HPARAM_KEYS if k in hparams and _norm(k) != defaults[k]]
     return ", ".join(diffs) if diffs else "(기본값)"
 
 

@@ -37,3 +37,16 @@ def test_violation_mode를_복원한다():
     assert cfg.violation_mode == "once_per_section"
     # 안 주면 기본값(예전 동작)을 남긴다는 것도 같이 잠근다.
     assert reward_config_from_hparams({}).violation_mode == RewardConfig().violation_mode == "repeat"
+
+
+def test_item_scale_None_은_옛_hparams_처럼_기본값이다():
+    """`train_ppo` 는 `--item-scale` 을 안 주면 `hparams["item_scale"] = None` 으로 남긴다 —
+
+    성적표(`report_m4a.py`)가 이 로그로 보상 설정을 되살릴 때 `None` 에서 터지면 새 실행 전부가 막힌다.
+    """
+    assert reward_config_from_hparams({"item_scale": None}) == RewardConfig()
+
+
+def test_item_scale_을_JSON_목록_꼴에서_복원한다():
+    cfg = reward_config_from_hparams({"item_scale": [[7, 5.0]]})
+    assert cfg.item_scale == ((7, 5.0),)

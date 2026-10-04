@@ -690,6 +690,18 @@ def test_hparam_diff는_보상_필드_변경도_잡는다(tmp_path):
     assert "(기본값)" in text   # run_a 는 바뀐 게 없다
 
 
+def test_hparam_diff는_item_scale_None_을_기본값으로_본다():
+    """`--item-scale` 을 안 준 실행은 hparams 에 `item_scale=None` 이 남는다 — `None != ()` 라서
+
+    기본 실행마다 "item_scale=None" 이 바뀐 하이퍼파라미터로 찍히면 안 된다. 준 실행은 보여야 한다.
+    """
+    module = _load_report_m4a_module()
+    assert module._hparam_diff({"lr": 3e-4, "item_scale": None}) == "(기본값)"
+    assert module._hparam_diff({"lr": 3e-4, "item_scale": []}) == "(기본값)"
+    changed = module._hparam_diff({"lr": 3e-4, "item_scale": [[7, 5.0]]})
+    assert "item_scale=" in changed and "7" in changed
+
+
 def test_평균_보상_열은_실행마다_다른_자로_잰다는_캡션이_있다(tmp_path):
     """M4d Task 1 재리뷰(Important #3-가): `--compare` 실행은 각자 자신의 보상 설정으로
 
