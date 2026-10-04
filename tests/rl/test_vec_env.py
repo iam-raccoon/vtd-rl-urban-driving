@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from vtd_rl.policy.encode import OBJ_DIM, OBJ_N, VEC_DIM, flatten_obs
-from vtd_rl.rl.vec_env import make_vec_env, vec_obs_to_arrays
+from vtd_rl.rl.vec_env import _boards, make_vec_env, vec_obs_to_arrays
 
 STAGES = ("curricula/stage1.json", "curricula/stage2.json")
 
@@ -83,5 +83,57 @@ def test_intent가_AsyncVectorEnv_경계를_넘는다():
         _obs, _reward, _term, _trunc, info = venv.step(action)
         comfort = np.asarray(info["reward_terms"]["comfort"], dtype=np.float64)
         assert np.allclose(comfort, 0.0, atol=1e-6), comfort
+    finally:
+        venv.close()
+
+
+FIVE = ("curricula/stage1.json", "curricula/stage2.json", "curricula/stage3a.json",
+        "curricula/stage3b.json", "curricula/stage3.json")
+
+
+def _stage_of(name):
+    return name.rsplit("#", 1)[1]
+
+
+def test_변종_기본값은_예전_판_목록과_같다():
+    a = _boards(FIVE)
+    b = _boards(FIVE, variants=1)
+    assert [x.name for x in a] == [x.name for x in b]
+    assert len(a) == 30 and len({id(x) for x in a}) == 30
+    assert all(x.name.count("#") == 1 and "@v" not in x.name for x in a)
+
+
+def test_변종을_걸어도_단계마다_판_수가_같다():
+    bs = _boards(FIVE, variants=4)
+    from collections import Counter
+    per_stage = Counter(_stage_of(b.name) for b in bs)
+    assert per_stage == {"stage1": 24, "stage2": 24, "stage3a": 24, "stage3b": 24, "stage3": 24}
+    # 액터 단계는 변종 v0~v3 이 다른 판이고, 액터 없는 단계는 같은 판 6 개의 되풀이다
+    for st in ("stage3a", "stage3b", "stage3"):
+        names = [b.name for b in bs if _stage_of(b.name) == st]
+        assert len(set(names)) == 24
+        assert {n.split("@v")[1].split("#")[0] for n in names} == {"0", "1", "2", "3"}
+    for st in ("stage1", "stage2"):
+        objs = [b for b in bs if _stage_of(b.name) == st]
+        assert len({id(b) for b in objs}) == 6
+
+
+def test_되풀이한_판도_접미사는_한_번만():
+    bs = _boards(FIVE, variants=3)
+    assert all(b.name.count("#") == 1 for b in bs), sorted({b.name for b in bs})
+
+
+def test_변종_수가_1보다_작으면_거부한다():
+    with pytest.raises(ValueError, match="variants"):
+        _boards(FIVE, variants=0)
+
+
+def test_변종_판으로도_벡터_환경이_돈다():
+    venv = make_vec_env(("curricula/stage1.json", "curricula/stage3b.json"), n_envs=2, seed=0,
+                        asynchronous=False, variants=2)
+    try:
+        obs, _info = venv.reset(seed=0)
+        obs, reward, term, trunc, info = venv.step(venv.action_space.sample())
+        assert reward.shape == (2,)
     finally:
         venv.close()

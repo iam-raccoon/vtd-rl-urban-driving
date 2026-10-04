@@ -969,3 +969,53 @@ def test_앵커_스모크가_로그에_KL을_남긴다(tmp_path):
     assert rows[0]["hparams"]["anchor_coef"] == 1.0
     # 가치만 배우는 처음 5 갱신(기본 --warmup-updates)이 지나면 정책이 움직여 KL 이 0 보다 커진다.
     assert max(r["anchor"] for r in rows) > 0.0
+
+
+def test_train_variants_기본값은_1이다():
+    mod = _load_train_ppo_module()
+    a = mod._build_parser().parse_args(["--out", "/tmp/불필요-존재안함"])
+    assert a.train_variants == 1
+
+
+def test_train_variants_범위를_벗어나면_거부한다(capsys):
+    """5 이상이면 학습 변종에 v4 가 들어가 보고 창(v4~v7)과 겹친다 — 무거운 준비 전에 죽는다."""
+    import sys
+    mod = _load_train_ppo_module()
+    old_argv = sys.argv
+    try:
+        for bad, msg in ((["train_ppo.py", "--smoke", "--out", "/tmp/불필요-존재안함", "--train-variants", "5"],
+                          "보고 창"),
+                         (["train_ppo.py", "--smoke", "--out", "/tmp/불필요-존재안함", "--train-variants", "0"],
+                          "1 이상")):
+            sys.argv = bad
+            with pytest.raises(SystemExit):
+                mod.main()
+            assert msg in capsys.readouterr().err
+    finally:
+        sys.argv = old_argv
+
+
+@pytest.mark.slow
+def test_train_variants_가_벡터_환경까지_닿는다(tmp_path, monkeypatch):
+    """파싱만 되고 `make_vec_env` 에 안 넘어가는 함정을 막는다 — 실제 `main()` 을 스모크로 돈다."""
+    import sys
+    mod = _load_train_ppo_module()
+    seen = {}
+    real = mod.make_vec_env
+
+    def spy(*args, **kwargs):
+        seen["variants"] = kwargs.get("variants")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(mod, "make_vec_env", spy)
+    old_argv = sys.argv
+    try:
+        sys.argv = ["train_ppo.py", "--smoke", "--out", str(tmp_path / "run"), "--seed", "0",
+                    "--train-variants", "2"]
+        mod.main()
+    finally:
+        sys.argv = old_argv
+    assert seen["variants"] == 2
+    with open(tmp_path / "run" / "log.jsonl", encoding="utf-8") as f:
+        rows = [json.loads(line) for line in f if line.strip()]
+    assert rows[0]["hparams"]["train_variants"] == 2
