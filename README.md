@@ -143,6 +143,7 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 - [docs/reports/m6r-continue-seeds.md](docs/reports/m6r-continue-seeds.md) — **새 최고 그물**: 최고 그물에서 모방 없이 PPO 를 시드 여섯으로 더 이어 돌려 체크포인트 32 개 중 큰 창으로 고름(M6r 시드 4 · 50 만). 새 시험 창 ③ 전체 **96.4%**(앞선 최고 90.1%, 같은 창), ①②③a③b 100%. course_A 멈춤 0
 - [docs/reports/m6s-continue-again.md](docs/reports/m6s-continue-again.md) — 같은 방법을 한 번 더 이었더니 **차이가 잡음 안**(+1.3 점) → 최고 그물 그대로. 최고 그물은 새 창 둘에서 96.4 · 96.9%(합 96.6%). 이어 돌릴수록 ①② 점수가 내려가 다음 축은 점수
 - [docs/reports/m6t-score-sheet.md](docs/reports/m6t-score-sheet.md) — 점수 진단: **학생 그물은 모두(모방 포함) 적색 신호를 거의 매번 지나간다**(완주 판당 적색 중대 3.6 건, 선생님 0.09). ② 점수 89.7~93.8 대 선생님 99.5 의 대부분이 이것. γ=0.99 할인으로는 서는 쪽이 손해라 PPO 가 못 고친다(추정)
+- [docs/reports/m6u-red-light.md](docs/reports/m6u-red-light.md) — 적색 위반 벌을 5 배·10 배로 키워도 **적색 중대가 그대로**(완주 판당 3.5, 대조와 같음). 끝까지 서 보지 않으니 덜 빨리 지나가도 벌이 같아 기울기가 없다. 고른 그물은 새 시험 창 +2.18 점(문턱 3 점 미달) → 최고 그물 그대로
 
 ### 여기까지 온 곳
 **PPO 는 M3 모방 학생을 한 번도 못 넘었다 — 학습의 어느 시점에서도.** 목표 판정은 M4a 부터 지금까지
