@@ -136,6 +136,7 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 - [docs/reports/m6k-ckpt-select.md](docs/reports/m6k-ckpt-select.md) — **지금 가장 좋은 그물(갱신)**: 중간 체크포인트까지 선택 창으로 고르니 M6g C 시드 1 · 150 만 걸음. 보고 창 ① 100% · ② 100% · ③a 100% · ③b 100% · **③ 전체 83.3%**(앞선 최고 80.6%, 차이는 잡음 안)
 - [docs/reports/m6l-lineages34.md](docs/reports/m6l-lineages34.md) — 갈래 3·4 를 세 단계로 키워도 **갈래 1 을 못 넘는다**(③ 전체 선택 창 70.8 · 58.3%, 갈래 1 86.1%). 갈래 3·4 는 첫 단계(③b)부터 안 올랐다. 최고 그물 그대로
 - [docs/reports/m6m-test-window.md](docs/reports/m6m-test-window.md) — **큰 시험 창(그물마다 384 판)으로 다시 재니 72 판 선택 창은 상위 그물을 거의 못 가른다**(순위 상관 0.17). 배포용 최고 그물 = M6g C 시드 1 마지막: ③ 전체 **87.8%**(시험 창), ①②③a③b 100%. 1~3 위(87~88%)는 구분이 안 된다
+- [docs/reports/m6n-big-select.md](docs/reports/m6n-big-select.md) — **큰 선택 창(384 판)으로 고르고 새 시험 창으로 확인한 최고 그물**: M6g C 시드 1 마지막, 새 시험 창 ③ 전체 **88.0%**(84.4~90.9), 큰 창 셋에서 87~88% 로 일관. 큰 창으로 본 칸 평균은 72 판 판정과 대체로 같고, 변종 학습이 원본 판보다 8 점 높다
 
 ### 여기까지 온 곳
 **PPO 는 M3 모방 학생을 한 번도 못 넘었다 — 학습의 어느 시점에서도.** 목표 판정은 M4a 부터 지금까지
