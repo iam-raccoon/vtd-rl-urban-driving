@@ -134,6 +134,7 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 - [docs/reports/m6i-lineage.md](docs/reports/m6i-lineage.md) — 갈래 가르기: 출발 그물을 고정하고 PPO 난수만 바꾸니 **둘 다 섞여 있다**. 갈래가 평균을 10~14 점 옮기고(선택·보고 창), 난수가 같은 갈래 안에서 15 점 흔든다. 최고 그물은 그대로
 - [docs/reports/m6j-one-stage.md](docs/reports/m6j-one-stage.md) — M4y 에서 바로 다섯 단계+변종 4 로 **한 단계 학습하면 세 단계보다 낮다**(③ 전체 선택 창 63.9 대 76.4%, 보고 창 56.0 대 71.8%). 정지차 하나부터 넓히는 순서가 낫다. 처음 쓴 갈래 3·4 도 이 경로에서는 평범
 - [docs/reports/m6k-ckpt-select.md](docs/reports/m6k-ckpt-select.md) — **지금 가장 좋은 그물(갱신)**: 중간 체크포인트까지 선택 창으로 고르니 M6g C 시드 1 · 150 만 걸음. 보고 창 ① 100% · ② 100% · ③a 100% · ③b 100% · **③ 전체 83.3%**(앞선 최고 80.6%, 차이는 잡음 안)
+- [docs/reports/m6l-lineages34.md](docs/reports/m6l-lineages34.md) — 갈래 3·4 를 세 단계로 키워도 **갈래 1 을 못 넘는다**(③ 전체 선택 창 70.8 · 58.3%, 갈래 1 86.1%). 갈래 3·4 는 첫 단계(③b)부터 안 올랐다. 최고 그물 그대로
 
 ### 여기까지 온 곳
 **PPO 는 M3 모방 학생을 한 번도 못 넘었다 — 학습의 어느 시점에서도.** 목표 판정은 M4a 부터 지금까지
