@@ -1,0 +1,361 @@
+{
+  "stage": 3,
+  "name": "학습용 남은 장면 — 정지차 직후 70 m 라바콘(좌·우), 오른쪽 라바콘. ③ 전체 액터 자리에서 150 m 이상 떨어뜨림(평가에 안 씀)",
+  "signals": "cycle",
+  "boards": [
+    {
+      "name": "course_A",
+      "route": "routes/HL_FMA_NEW_A.json",
+      "lane": "routes/HL_FMA_NEW_A_lane.json",
+      "jitter": {
+        "s": 40.0,
+        "lateral": 0.6
+      },
+      "actors": [
+        {
+          "id": 600,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 300.0,
+          "lateral": -1.1,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        }
+      ]
+    },
+    {
+      "name": "course_B",
+      "route": "routes/HL_FMA_NEW_B.json",
+      "lane": "routes/HL_FMA_NEW_B_lane.json",
+      "jitter": {
+        "s": 40.0,
+        "lateral": 0.6
+      },
+      "actors": [
+        {
+          "id": 620,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 250.0,
+          "lateral": -1.1,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        },
+        {
+          "id": 621,
+          "kind": "static",
+          "type": "vehicle",
+          "s": 1440.0,
+          "lateral": 0.9,
+          "size": [
+            4.5,
+            1.8,
+            1.5
+          ]
+        },
+        {
+          "id": 622,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 1510.0,
+          "lateral": 1.05,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        },
+        {
+          "id": 623,
+          "kind": "static",
+          "type": "vehicle",
+          "s": 2120.0,
+          "lateral": -0.9,
+          "size": [
+            4.5,
+            1.8,
+            1.5
+          ]
+        },
+        {
+          "id": 624,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 2190.0,
+          "lateral": -1.05,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        }
+      ]
+    },
+    {
+      "name": "course_D",
+      "route": "routes/HL_FMA_NEW_D.json",
+      "lane": "routes/HL_FMA_NEW_D_lane.json",
+      "jitter": {
+        "s": 40.0,
+        "lateral": 0.6
+      },
+      "actors": [
+        {
+          "id": 624,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 150.0,
+          "lateral": -1.1,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        },
+        {
+          "id": 620,
+          "kind": "static",
+          "type": "vehicle",
+          "s": 1020.0,
+          "lateral": -0.9,
+          "size": [
+            4.5,
+            1.8,
+            1.5
+          ]
+        },
+        {
+          "id": 621,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 1090.0,
+          "lateral": -1.05,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        },
+        {
+          "id": 622,
+          "kind": "static",
+          "type": "vehicle",
+          "s": 1730.0,
+          "lateral": 0.9,
+          "size": [
+            4.5,
+            1.8,
+            1.5
+          ]
+        },
+        {
+          "id": 623,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 1800.0,
+          "lateral": 1.05,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        }
+      ]
+    },
+    {
+      "name": "course_E",
+      "route": "routes/HL_FMA_NEW_E.json",
+      "lane": "routes/HL_FMA_NEW_E_lane.json",
+      "jitter": {
+        "s": 40.0,
+        "lateral": 0.6
+      },
+      "actors": [
+        {
+          "id": 640,
+          "kind": "static",
+          "type": "vehicle",
+          "s": 200.0,
+          "lateral": -0.9,
+          "size": [
+            4.5,
+            1.8,
+            1.5
+          ]
+        },
+        {
+          "id": 641,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 270.0,
+          "lateral": -1.05,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        },
+        {
+          "id": 642,
+          "kind": "static",
+          "type": "vehicle",
+          "s": 610.0,
+          "lateral": 0.9,
+          "size": [
+            4.5,
+            1.8,
+            1.5
+          ]
+        },
+        {
+          "id": 643,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 680.0,
+          "lateral": 1.05,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        },
+        {
+          "id": 644,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 2200.0,
+          "lateral": -1.1,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        }
+      ]
+    },
+    {
+      "name": "course_G",
+      "route": "routes/HL_FMA_NEW_G.json",
+      "lane": "routes/HL_FMA_NEW_G_lane.json",
+      "jitter": {
+        "s": 40.0,
+        "lateral": 0.6
+      },
+      "actors": [
+        {
+          "id": 650,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 1680.0,
+          "lateral": -1.1,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        },
+        {
+          "id": 651,
+          "kind": "static",
+          "type": "vehicle",
+          "s": 2030.0,
+          "lateral": 0.9,
+          "size": [
+            4.5,
+            1.8,
+            1.5
+          ]
+        },
+        {
+          "id": 652,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 2100.0,
+          "lateral": 1.05,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        }
+      ]
+    },
+    {
+      "name": "course_H",
+      "route": "routes/HL_FMA_NEW_H.json",
+      "lane": "routes/HL_FMA_NEW_H_lane.json",
+      "jitter": {
+        "s": 40.0,
+        "lateral": 0.6
+      },
+      "actors": [
+        {
+          "id": 654,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 350.0,
+          "lateral": -1.1,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        },
+        {
+          "id": 650,
+          "kind": "static",
+          "type": "vehicle",
+          "s": 710.0,
+          "lateral": -0.9,
+          "size": [
+            4.5,
+            1.8,
+            1.5
+          ]
+        },
+        {
+          "id": 651,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 780.0,
+          "lateral": -1.05,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        },
+        {
+          "id": 652,
+          "kind": "static",
+          "type": "vehicle",
+          "s": 1490.0,
+          "lateral": 0.9,
+          "size": [
+            4.5,
+            1.8,
+            1.5
+          ]
+        },
+        {
+          "id": 653,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 1560.0,
+          "lateral": 1.05,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        }
+      ]
+    }
+  ]
+}
