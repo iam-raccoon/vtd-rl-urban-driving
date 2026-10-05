@@ -478,3 +478,36 @@ def test_stall_을_주면_정체는_실패로_끝나고_벌을_문다():
     assert info["outcome"] == "stalled" and term and not trunc
     assert info["reward_terms"]["stall"] == -200.0
     assert r == pytest.approx(sum(info["reward_terms"].values()))
+
+
+def test_obs_gap_은_앞길_위_물체의_거리와_다가가는_속도를_준다():
+    env = VtdDriveEnv([rammer_board()])
+    env.reset(seed=0)
+    env.step({"control": np.array([0.0, 0.0], dtype=np.float32), "turn": 0})
+    gap, v_close = env._obs_gap()
+    # 경로 60 m 의 차(길이 4.5) — 뒷축 s≈0 에서 앞범퍼(3.808)·차 반길이(2.25)를 뺀 거리
+    assert 50.0 < gap < 56.0
+    assert v_close == pytest.approx(env.world.ego.v, abs=1e-6)
+    env.close()
+    empty = VtdDriveEnv([boards()[0]])
+    empty.reset(seed=0)
+    empty.step({"control": np.array([0.0, 0.0], dtype=np.float32), "turn": 0})
+    assert empty._obs_gap() is None
+    empty.close()
+
+
+def test_obs_profile_을_켜면_정지차에_달려들_때_obs_항이_깎인다():
+    def run(cfg):
+        env = VtdDriveEnv([rammer_board()], EnvConfig(reward=cfg))
+        env.reset(seed=0)
+        vals = []
+        for _ in range(300):
+            _o, _r, term, trunc, info = env.step({"control": np.array([0.0, 1.0], dtype=np.float32), "turn": 0})
+            vals.append(info["reward_terms"].get("obs"))
+            if term or trunc:
+                break
+        env.close()
+        return vals
+    on = run(RewardConfig(obs_profile=0.5))
+    assert min(on) < 0.0
+    assert all(v is None for v in run(RewardConfig()))

@@ -3,7 +3,7 @@ import random
 import pytest
 
 from vtd_rl import rule_stack as rs
-from vtd_rl.env.reward import COLLISION_ITEMS, RewardConfig, RewardShaper, ViolationTracker, lat_excess, red_excess
+from vtd_rl.env.reward import COLLISION_ITEMS, RewardConfig, RewardShaper, ViolationTracker, lat_excess, obs_excess, red_excess
 from vtd_rl.referee.core import Hit
 from vtd_rl.world.board import load_board, slice_board
 
@@ -492,3 +492,42 @@ def test_정체와_충돌이_같은_걸음이면_둘_다_깎는다():
     out = sh.step([Hit(1.0, 0, 11, "major")], 0.0, zero, zero, "stalled")
     assert out.terms["collision"] == cfg.collision and out.terms["stall"] == -200.0
     assert out.total == pytest.approx(sum(out.terms.values()))
+
+
+@pytest.mark.parametrize("obs, want", [
+    (None, 0.0),
+    ((60.0, 13.0), 0.0),                      # v_ok = sqrt(4·57) ≈ 15.1
+    ((12.0, 10.0), 10.0 - 6.0),               # v_ok = sqrt(4·9) = 6
+    ((2.0, 3.0), 3.0),                        # buffer 안: v_ok = 0
+    ((2.0, 0.0), 0.0),                        # 서 있으면 벌 없음
+    ((12.0, -2.0), 0.0),                      # 멀어지는 중
+])
+def test_obs_excess(obs, want):
+    assert obs_excess(obs, 2.0, 3.0) == pytest.approx(want)
+
+
+def test_obs_profile_기본값은_꺼짐이고_항이_없다():
+    assert RewardConfig().obs_profile == 0.0
+    sh = RewardShaper(h_board(), RewardConfig())
+    sh.reset()
+    zero = {"control": [0.0, 0.0], "turn": 0}
+    assert "obs" not in sh.step([], 0.0, zero, zero, "running", obs=(12.0, 10.0)).terms
+
+
+def test_obs_profile_은_넘은_속도에_비례해_깎는다():
+    sh = RewardShaper(h_board(), RewardConfig(obs_profile=0.5))
+    sh.reset()
+    zero = {"control": [0.0, 0.0], "turn": 0}
+    out = sh.step([], 0.0, zero, zero, "running", obs=(12.0, 10.0))
+    assert out.terms["obs"] == pytest.approx(-0.5 * 4.0)
+    assert out.total == pytest.approx(sum(out.terms.values()))
+    calm = sh.step([], 0.0, zero, zero, "running", obs=None)
+    assert calm.terms["obs"] == 0.0 and str(calm.terms["obs"]) == "0.0"
+
+
+@pytest.mark.parametrize("kw", [{"obs_profile": -0.1}, {"obs_profile": float("nan")}, {"obs_decel": 0.0},
+                                {"obs_decel": float("inf")}, {"obs_buffer": -1.0}, {"obs_margin": -0.1},
+                                {"obs_margin": float("nan")}])
+def test_잘못된_obs_설정은_거부한다(kw):
+    with pytest.raises(ValueError):
+        RewardConfig(**kw)

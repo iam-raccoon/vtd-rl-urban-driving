@@ -48,6 +48,19 @@ def lat_excess(lat, deadband: float, free_range: float) -> float:
     return max(0.0, float(dev) - deadband)
 
 
+def obs_excess(obs, decel: float, buffer: float) -> float:
+    """앞길 위 물체 `(gap, v_close)` → 감속 곡선을 넘은 속도[m/s]. None 이면 0(M7d).
+
+    `gap` 은 앞범퍼에서 물체 뒤끝까지[m], `v_close` 는 다가가는 속도[m/s](멀어지면 음수).
+    허용 속도 `v_ok = sqrt(2·decel·max(gap − buffer, 0))` 는 물체 buffer 앞에 서는 등감속 곡선이다.
+    """
+    if obs is None:
+        return 0.0
+    gap, v_close = obs
+    v_ok = math.sqrt(2.0 * decel * max(float(gap) - buffer, 0.0))
+    return max(0.0, float(v_close) - v_ok)
+
+
 @dataclass(frozen=True)
 class RewardConfig:
     progress_total: float = 100.0    # 완주까지 진행 항의 합
@@ -89,6 +102,13 @@ class RewardConfig:
     # M7a — 정체 벌. 0 이 아니면 정체(60 초 동안 1 m 도 못 감)를 실패로 끝내고(terminated) 그 걸음에
     # 이 값을 더한다(항 `stall`). 기본 0 이면 예전처럼 잘리기만 한다(truncated, 항도 없다).
     stall: float = 0.0
+    # M7d — 앞길 위 장애물 감속 곡선. 차 앞 통로(물체 반폭 + 내 차 반폭 + obs_margin) 안의 가장 가까운
+    # 물체 앞에 설 수 있는 속도(`obs_excess`)를 넘으면 걸음마다 넘은 속도[m/s] × obs_profile 을 깎는다
+    # (항 `obs`). 기본 0 이면 꺼짐(항도 없다).
+    obs_profile: float = 0.0
+    obs_decel: float = 2.0           # [m/s²]
+    obs_buffer: float = 3.0          # [m] — 물체 이만큼 앞에 서는 곡선
+    obs_margin: float = 0.3          # [m] — 통로 여유
 
     def __post_init__(self):
         pairs = []
@@ -120,6 +140,14 @@ class RewardConfig:
             v = getattr(self, name)
             if not math.isfinite(v) or v > 0.0:
                 raise ValueError(f"{name} 는 유한한 0 이하여야 한다: {v}")
+        if not math.isfinite(self.obs_profile) or self.obs_profile < 0.0:
+            raise ValueError(f"obs_profile 은 유한한 0 이상이어야 한다: {self.obs_profile}")
+        if not math.isfinite(self.obs_decel) or self.obs_decel <= 0.0:
+            raise ValueError(f"obs_decel 은 유한한 양수여야 한다: {self.obs_decel}")
+        for name in ("obs_buffer", "obs_margin"):
+            v = getattr(self, name)
+            if not math.isfinite(v) or v < 0.0:
+                raise ValueError(f"{name} 는 유한한 0 이상이어야 한다: {v}")
 
 
 @dataclass
@@ -202,7 +230,7 @@ class RewardShaper:
         self._prev_intent = None
 
     def step(self, hits, ds: float, action, prev_action, outcome: str, intent=None, red=None,
-             lane=None, lat=None) -> RewardStep:
+             lane=None, lat=None, obs=None) -> RewardStep:
         cfg = self.cfg
         # 충돌 항목(⑪⑭)은 `collision` 항이 따로 −50 을 물리므로 위반 합계에서 뺀다(기존 규칙).
         # `charge` 가 감점까지 내므로, 충돌 히트를 **처음부터 갈라서** 두 번 부른다 —
@@ -251,4 +279,6 @@ class RewardShaper:
             terms["lat"] = 0.0 - cfg.lat_profile * lat_excess(lat, cfg.lat_deadband, cfg.lat_free_range)
         if cfg.stall != 0.0:          # 끈 실행은 항 자체가 없다
             terms["stall"] = cfg.stall if outcome == "stalled" else 0.0
+        if cfg.obs_profile > 0.0:     # 끈 실행은 항 자체가 없다
+            terms["obs"] = 0.0 - cfg.obs_profile * obs_excess(obs, cfg.obs_decel, cfg.obs_buffer)
         return RewardStep(sum(terms.values()), terms, collision, len(counted) + len(col_counted))

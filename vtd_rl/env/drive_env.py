@@ -28,6 +28,8 @@ from vtd_rl.world.signals import PASSED_MARGIN
 from vtd_rl.world.world import World, WorldConfig
 
 RUNNING = "running"
+EGO_HALF_W = 0.943               # 내 차 반폭[m] — 채점기 run_logger.EGO_HALF_W 와 같다(M7d 장애물 통로)
+ROAD_SURFACE_H = 0.25            # 이보다 낮은 물체는 노면 물체 — vtd_io.classify_object 의 경계(M7d)
 
 
 @dataclass
@@ -146,8 +148,9 @@ class VtdDriveEnv(gym.Env):
         lane = (self.referee.take_edge_excess() * self.cfg.world.dt
                 if self.cfg.reward.lane_profile > 0.0 else None)       # [m·행] × 프레임 dt = [m·s]
         lat = self._lat_gap() if self.cfg.reward.lat_profile > 0.0 else None
+        obs = self._obs_gap() if self.cfg.reward.obs_profile > 0.0 else None
         shaped = self._shaper.step(hits, max(0.0, self._info.s - s0), action, self._prev_action,
-                                   outcome, intent=self.intent, red=red, lane=lane, lat=lat)
+                                   outcome, intent=self.intent, red=red, lane=lane, lat=lat, obs=obs)
         self._prev_action = {"control": np.asarray(action["control"], dtype=np.float32).copy(),
                              "turn": int(action["turn"])}
         # M7a — 정체 벌을 주면 정체는 실패로 끝난다(기본 0 이면 예전처럼 아래에서 잘리기만 한다).
@@ -190,6 +193,31 @@ class VtdDriveEnv(gym.Env):
         ego = self.world.ego
         near = min((math.hypot(o.x - ego.x, o.y - ego.y) for o in self.state.objects), default=math.inf)
         return abs(float(self._info.lateral)), float(near)
+
+    def _obs_gap(self):
+        """차 앞 통로 안 가장 가까운 물체의 `(앞범퍼~물체 뒤끝 거리[m], 다가가는 속도[m/s])`, 없으면 None(M7d).
+
+        내 차 기준(뒷축, 진행 방향 x)으로 물체를 돌려, 앞(fx > 0)에 있고 옆 거리가
+        `물체 반폭 + 내 차 반폭 + obs_margin` 안인 것만 본다. 노면 물체(높이 < 0.25 m)는 뺀다.
+        """
+        if self._info is None:
+            return None
+        ego = self.world.ego
+        ch, sh = math.cos(-ego.heading), math.sin(-ego.heading)
+        margin = self.cfg.reward.obs_margin
+        best = None
+        for o in self.state.objects:
+            if o.height < ROAD_SURFACE_H:
+                continue
+            dx, dy = o.x - ego.x, o.y - ego.y
+            fx, fy = dx * ch - dy * sh, dx * sh + dy * ch
+            if fx <= 0.0 or abs(fy) >= o.width / 2.0 + EGO_HALF_W + margin:
+                continue
+            gap = max(0.0, fx - rs.score_fma.FRONT - o.length / 2.0)
+            if best is None or gap < best[0]:
+                v_close = float(ego.v) - max(0.0, float(o.speed) * math.cos(o.heading - ego.heading))
+                best = (gap, v_close)
+        return best
 
     def _frozen_step(self):
         """판이 이미 끝난 뒤 온 step() — 세계·심판·행 기록기를 더 밟지 않고 마지막 상태를 그대로 준다.
