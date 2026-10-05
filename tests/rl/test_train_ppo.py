@@ -489,6 +489,15 @@ def test_실패_벌_인자가_RewardConfig에_반영된다():
     assert (off.collision, off.offroad, off.stall) == (RewardConfig().collision, RewardConfig().offroad, 0.0)
 
 
+def test_실패_벌_인자는_hparams_로도_되살아난다():
+    """`hparams = vars(a)` 의 키가 `RewardConfig` 필드 이름과 같아야 성적표가 보상 설정을 되살린다(M7a 리뷰)."""
+    from vtd_rl.rl.reward_cfg import reward_config_from_hparams
+    module = _load_train_ppo_module()
+    a = module._build_parser().parse_args(["--out", "x", "--collision-penalty", "-200", "--stall-penalty", "-400"])
+    cfg = reward_config_from_hparams(vars(a))
+    assert (cfg.collision, cfg.stall) == (-200.0, -400.0)
+
+
 @pytest.mark.slow
 def test_comfort_on_intent가_승차감의_표본_잡음을_줄인다(tmp_path):
     """`--comfort-on-intent` 를 켜면 실행 행동이 아니라 정책의 의도(결정적 평균)의 변화로

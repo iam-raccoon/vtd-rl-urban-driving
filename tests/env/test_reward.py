@@ -482,3 +482,13 @@ def test_stall_을_주면_정체한_걸음에만_깎는다():
 def test_실패_벌은_유한한_0_이하여야_한다(kw):
     with pytest.raises(ValueError):
         RewardConfig(**kw)
+
+
+def test_정체와_충돌이_같은_걸음이면_둘_다_깎는다():
+    cfg = RewardConfig(stall=-200.0)
+    sh = RewardShaper(h_board(), cfg)
+    sh.reset()
+    zero = {"control": [0.0, 0.0], "turn": 0}
+    out = sh.step([Hit(1.0, 0, 11, "major")], 0.0, zero, zero, "stalled")
+    assert out.terms["collision"] == cfg.collision and out.terms["stall"] == -200.0
+    assert out.total == pytest.approx(sum(out.terms.values()))
