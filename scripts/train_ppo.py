@@ -309,6 +309,12 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="횡오차 벌의 문턱[m]")
     ap.add_argument("--lat-free-range", type=float, default=default_reward_cfg.lat_free_range,
                     help="이 거리[m] 안에 물체가 있으면 횡오차 벌을 끈다")
+    ap.add_argument("--collision-penalty", type=float, default=default_reward_cfg.collision,
+                    help="충돌 벌(M7a 에서 연다). 유한한 0 이하")
+    ap.add_argument("--offroad-penalty", type=float, default=default_reward_cfg.offroad,
+                    help="도로 이탈 벌(M7a 에서 연다). 유한한 0 이하")
+    ap.add_argument("--stall-penalty", type=float, default=default_reward_cfg.stall,
+                    help="정체 벌(M7a). 0 이 아니면 정체를 실패로 끝내고 이 값을 더한다. 0 이면 예전처럼 잘리기만 한다")
     ap.add_argument("--log-std-max", type=float, default=None,
                     help="정책의 σ 상한(log 스케일)을 덮어쓴다. 기본값은 체크포인트/PolicyConfig "
                          "값 그대로(0.5). M4c 는 3M 에서 결정적 모드만 무너지는 것을 봤는데 σ 와 "
@@ -343,11 +349,12 @@ def _build_cfg(a) -> PPOConfig:
 
 
 def _build_reward_cfg(a) -> RewardConfig:
-    """`RewardConfig` 는 frozen dataclass 라 `dataclasses.replace` 로 CLI 로 연 열한 필드만 덮어쓴다.
+    """`RewardConfig` 는 frozen dataclass 라 `dataclasses.replace` 로 CLI 로 연 열네 필드만 덮어쓴다.
 
     인자를 하나도 안 주면 `a.comfort_steer`/`a.comfort_accel`/`a.comfort_on_intent`/
     `a.violation_mode`/`a.red_profile`/`a.red_decel`/`a.lane_profile`/`a.lat_profile`/`a.lat_deadband`/
-    `a.lat_free_range` 가 이미 `RewardConfig()` 자신의 기본값이고,
+    `a.lat_free_range`/`a.collision_penalty`/`a.offroad_penalty`/`a.stall_penalty` 가 이미
+    `RewardConfig()` 자신의 기본값이고,
     `a.item_scale` 은 `None`(→ `()`)이므로(위 `_build_parser` 참고) 이 함수가 만드는 `cfg` 는
     `RewardConfig()` 와 완전히 같다 — 기본 동작이 안 바뀐다(`_build_cfg` 와 같은 패턴).
     """
@@ -357,7 +364,9 @@ def _build_reward_cfg(a) -> RewardConfig:
                                item_scale=tuple(a.item_scale or ()),
                                red_profile=a.red_profile, red_decel=a.red_decel,
                                lane_profile=a.lane_profile, lat_profile=a.lat_profile,
-                               lat_deadband=a.lat_deadband, lat_free_range=a.lat_free_range)
+                               lat_deadband=a.lat_deadband, lat_free_range=a.lat_free_range,
+                               collision=a.collision_penalty, offroad=a.offroad_penalty,
+                               stall=a.stall_penalty)
 
 
 def _build_optimizer(net, cfg: PPOConfig) -> torch.optim.Optimizer:

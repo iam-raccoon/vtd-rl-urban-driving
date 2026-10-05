@@ -150,7 +150,9 @@ class VtdDriveEnv(gym.Env):
                                    outcome, intent=self.intent, red=red, lane=lane, lat=lat)
         self._prev_action = {"control": np.asarray(action["control"], dtype=np.float32).copy(),
                              "turn": int(action["turn"])}
-        terminated = outcome in ("goal", "offroad") or shaped.collision
+        # M7a — 정체 벌을 주면 정체는 실패로 끝난다(기본 0 이면 예전처럼 아래에서 잘리기만 한다).
+        stall_fail = outcome == "stalled" and self.cfg.reward.stall != 0.0
+        terminated = outcome in ("goal", "offroad") or shaped.collision or stall_fail
         # 둘이 함께 참이면 안 된다(Gymnasium 규약) — 충돌과 시간초과가 같은 걸음에 올 수 있다
         truncated = outcome in ("timeout", "stalled") and not terminated
         if outcome == RUNNING and shaped.collision:

@@ -6,6 +6,7 @@ from vtd_rl import rule_stack as rs
 from vtd_rl.env.drive_env import EnvConfig, VtdDriveEnv
 from vtd_rl.env.reward import RewardConfig
 from vtd_rl.world.board import load_board, load_curriculum, slice_board
+from vtd_rl.world.world import WorldConfig
 
 H = {"name": "course_H", "route": "routes/HL_FMA_NEW_H.json", "lane": "routes/HL_FMA_NEW_H_lane.json"}
 
@@ -452,3 +453,28 @@ def test_lat_profile_을_켜면_경로를_벗어날_때_lat_항이_깎인다():
     on = run(RewardConfig(lat_profile=0.5))
     assert min(on) < 0.0
     assert all(v is None for v in run(RewardConfig()))
+
+
+def _stall_run(cfg):
+    """H 0~250 에서 가속 0 으로 서 있는다 — 세계의 정체 판정(stall_seconds)까지 간다."""
+    env = VtdDriveEnv([boards()[0]], EnvConfig(world=WorldConfig(stall_seconds=3.0), reward=cfg))
+    env.reset(seed=0)
+    for _ in range(200):
+        _o, r, term, trunc, info = env.step({"control": np.array([0.0, -1.0], dtype=np.float32), "turn": 0})
+        if term or trunc:
+            break
+    env.close()
+    return r, term, trunc, info
+
+
+def test_stall_이_0이면_정체는_예전처럼_잘리기만_한다():
+    r, term, trunc, info = _stall_run(RewardConfig())
+    assert info["outcome"] == "stalled" and trunc and not term
+    assert "stall" not in info["reward_terms"]
+
+
+def test_stall_을_주면_정체는_실패로_끝나고_벌을_문다():
+    r, term, trunc, info = _stall_run(RewardConfig(stall=-200.0))
+    assert info["outcome"] == "stalled" and term and not trunc
+    assert info["reward_terms"]["stall"] == -200.0
+    assert r == pytest.approx(sum(info["reward_terms"].values()))

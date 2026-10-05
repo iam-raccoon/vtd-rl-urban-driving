@@ -456,3 +456,29 @@ def test_lat_profile_은_문턱_넘은_횡오차에_비례해_깎는다():
 def test_잘못된_lat_설정은_거부한다(kw):
     with pytest.raises(ValueError):
         RewardConfig(**kw)
+
+
+def test_stall_기본값은_0이고_항이_없다():
+    assert RewardConfig().stall == 0.0
+    sh = RewardShaper(h_board(), RewardConfig())
+    sh.reset()
+    zero = {"control": [0.0, 0.0], "turn": 0}
+    assert "stall" not in sh.step([], 0.0, zero, zero, "stalled").terms
+
+
+def test_stall_을_주면_정체한_걸음에만_깎는다():
+    sh = RewardShaper(h_board(), RewardConfig(stall=-200.0))
+    sh.reset()
+    zero = {"control": [0.0, 0.0], "turn": 0}
+    run = sh.step([], 0.0, zero, zero, "running")
+    assert run.terms["stall"] == 0.0 and str(run.terms["stall"]) == "0.0"
+    out = sh.step([], 0.0, zero, zero, "stalled")
+    assert out.terms["stall"] == -200.0
+    assert out.total == pytest.approx(sum(out.terms.values()))
+
+
+@pytest.mark.parametrize("kw", [{"stall": 1.0}, {"stall": float("nan")}, {"collision": 10.0},
+                                {"collision": float("-inf")}, {"offroad": 5.0}, {"offroad": float("nan")}])
+def test_실패_벌은_유한한_0_이하여야_한다(kw):
+    with pytest.raises(ValueError):
+        RewardConfig(**kw)

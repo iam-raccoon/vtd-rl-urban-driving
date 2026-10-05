@@ -86,6 +86,9 @@ class RewardConfig:
     lat_profile: float = 0.0
     lat_deadband: float = 0.4        # [m] — 선생님은 장애물 없는 길에서 걸음의 3.5% 만 넘는다
     lat_free_range: float = 40.0     # [m]
+    # M7a — 정체 벌. 0 이 아니면 정체(60 초 동안 1 m 도 못 감)를 실패로 끝내고(terminated) 그 걸음에
+    # 이 값을 더한다(항 `stall`). 기본 0 이면 예전처럼 잘리기만 한다(truncated, 항도 없다).
+    stall: float = 0.0
 
     def __post_init__(self):
         pairs = []
@@ -113,6 +116,10 @@ class RewardConfig:
             raise ValueError(f"lat_deadband 는 유한한 0 이상이어야 한다: {self.lat_deadband}")
         if not math.isfinite(self.lat_free_range) or self.lat_free_range < 0.0:
             raise ValueError(f"lat_free_range 는 유한한 0 이상이어야 한다: {self.lat_free_range}")
+        for name in ("collision", "offroad", "stall"):
+            v = getattr(self, name)
+            if not math.isfinite(v) or v > 0.0:
+                raise ValueError(f"{name} 는 유한한 0 이하여야 한다: {v}")
 
 
 @dataclass
@@ -242,4 +249,6 @@ class RewardShaper:
             terms["lane"] = 0.0 - cfg.lane_profile * (lane or 0.0)   # 0.0− : 침범 없는 걸음이 −0.0 이 안 되게
         if cfg.lat_profile > 0.0:     # 끈 실행은 항 자체가 없다
             terms["lat"] = 0.0 - cfg.lat_profile * lat_excess(lat, cfg.lat_deadband, cfg.lat_free_range)
+        if cfg.stall != 0.0:          # 끈 실행은 항 자체가 없다
+            terms["stall"] = cfg.stall if outcome == "stalled" else 0.0
         return RewardStep(sum(terms.values()), terms, collision, len(counted) + len(col_counted))
