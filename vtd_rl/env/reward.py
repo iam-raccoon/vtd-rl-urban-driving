@@ -81,7 +81,7 @@ class RewardConfig:
     # M6x — 차로 침범 깊이 벌. 채점기가 ③ 물림으로 세는 행의 0.1 m 넘는 깊이×시간[m·s] × lane_profile 을
     # 걸음마다 깎는다(항 `lane`, 행이 풀리는 2.5 초 뒤에 온다). 기본 0 이면 꺼짐(항도 없다).
     lane_profile: float = 0.0
-    # M6y — 경로 기준 횡오차 벌. 앞뒤 lat_free_range 안에 물체가 없을 때 |횡오차| 가 lat_deadband 를
+    # M6y — 경로 기준 횡오차 벌. 주변 lat_free_range 안(방향 무관, 물체 관측 범위 80 m 를 넘기면 뜻 없음)에 물체가 없을 때 |횡오차| 가 lat_deadband 를
     # 넘은 만큼[m] × lat_profile 을 그 걸음에 깎는다(항 `lat`). 기본 0 이면 꺼짐(항도 없다).
     lat_profile: float = 0.0
     lat_deadband: float = 0.4        # [m] — 선생님은 장애물 없는 길에서 걸음의 3.5% 만 넘는다

@@ -424,6 +424,8 @@ def test_잘못된_lane_profile_은_거부한다(bad):
     ((0.9, 999.0), 0.5),          # 0.9 − 0.4
     ((0.9, 30.0), 0.0),           # 40 m 안에 물체 — 끈다
     ((0.9, float("inf")), 0.5),   # 물체 없음
+    ((0.9, 40.0), 0.0),           # 경계: 딱 40 m 면 끈다
+    ((0.4, 999.0), 0.0),          # 경계: 문턱과 같으면 0
 ])
 def test_lat_excess(lat, want):
     assert lat_excess(lat, 0.4, 40.0) == pytest.approx(want)
