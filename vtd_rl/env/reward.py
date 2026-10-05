@@ -35,6 +35,19 @@ def red_excess(red, decel: float) -> float:
     return max(0.0, float(v) - v_ok)
 
 
+def lat_excess(lat, deadband: float, free_range: float) -> float:
+    """`(|횡오차|, 가장 가까운 물체 거리)` → 문턱을 넘은 횡오차[m]. None 이거나 물체가 가까우면 0.
+
+    장애물을 비킬 때는 경로를 벗어나야 하므로 `free_range` 안에 물체가 있으면 벌하지 않는다(M6y).
+    """
+    if lat is None:
+        return 0.0
+    dev, near = lat
+    if near <= free_range:
+        return 0.0
+    return max(0.0, float(dev) - deadband)
+
+
 @dataclass(frozen=True)
 class RewardConfig:
     progress_total: float = 100.0    # 완주까지 진행 항의 합
@@ -68,6 +81,11 @@ class RewardConfig:
     # M6x — 차로 침범 깊이 벌. 채점기가 ③ 물림으로 세는 행의 0.1 m 넘는 깊이×시간[m·s] × lane_profile 을
     # 걸음마다 깎는다(항 `lane`, 행이 풀리는 2.5 초 뒤에 온다). 기본 0 이면 꺼짐(항도 없다).
     lane_profile: float = 0.0
+    # M6y — 경로 기준 횡오차 벌. 앞뒤 lat_free_range 안에 물체가 없을 때 |횡오차| 가 lat_deadband 를
+    # 넘은 만큼[m] × lat_profile 을 그 걸음에 깎는다(항 `lat`). 기본 0 이면 꺼짐(항도 없다).
+    lat_profile: float = 0.0
+    lat_deadband: float = 0.4        # [m] — 선생님은 장애물 없는 길에서 걸음의 3.5% 만 넘는다
+    lat_free_range: float = 40.0     # [m]
 
     def __post_init__(self):
         pairs = []
@@ -89,6 +107,12 @@ class RewardConfig:
             raise ValueError(f"red_decel 은 유한한 양수여야 한다: {self.red_decel}")
         if not math.isfinite(self.lane_profile) or self.lane_profile < 0.0:
             raise ValueError(f"lane_profile 은 유한한 0 이상이어야 한다: {self.lane_profile}")
+        if not math.isfinite(self.lat_profile) or self.lat_profile < 0.0:
+            raise ValueError(f"lat_profile 은 유한한 0 이상이어야 한다: {self.lat_profile}")
+        if not math.isfinite(self.lat_deadband) or self.lat_deadband < 0.0:
+            raise ValueError(f"lat_deadband 는 유한한 0 이상이어야 한다: {self.lat_deadband}")
+        if not math.isfinite(self.lat_free_range) or self.lat_free_range < 0.0:
+            raise ValueError(f"lat_free_range 는 유한한 0 이상이어야 한다: {self.lat_free_range}")
 
 
 @dataclass
@@ -171,7 +195,7 @@ class RewardShaper:
         self._prev_intent = None
 
     def step(self, hits, ds: float, action, prev_action, outcome: str, intent=None, red=None,
-             lane=None) -> RewardStep:
+             lane=None, lat=None) -> RewardStep:
         cfg = self.cfg
         # 충돌 항목(⑪⑭)은 `collision` 항이 따로 −50 을 물리므로 위반 합계에서 뺀다(기존 규칙).
         # `charge` 가 감점까지 내므로, 충돌 히트를 **처음부터 갈라서** 두 번 부른다 —
@@ -216,4 +240,6 @@ class RewardShaper:
             terms["red"] = 0.0 - cfg.red_profile * red_excess(red, cfg.red_decel)   # 0.0− : 적색 아닌 걸음이 −0.0 이 안 되게
         if cfg.lane_profile > 0.0:    # 끈 실행은 항 자체가 없다
             terms["lane"] = 0.0 - cfg.lane_profile * (lane or 0.0)   # 0.0− : 침범 없는 걸음이 −0.0 이 안 되게
+        if cfg.lat_profile > 0.0:     # 끈 실행은 항 자체가 없다
+            terms["lat"] = 0.0 - cfg.lat_profile * lat_excess(lat, cfg.lat_deadband, cfg.lat_free_range)
         return RewardStep(sum(terms.values()), terms, collision, len(counted) + len(col_counted))

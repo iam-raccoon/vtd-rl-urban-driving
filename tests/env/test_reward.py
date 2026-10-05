@@ -3,7 +3,7 @@ import random
 import pytest
 
 from vtd_rl import rule_stack as rs
-from vtd_rl.env.reward import COLLISION_ITEMS, RewardConfig, RewardShaper, ViolationTracker, red_excess
+from vtd_rl.env.reward import COLLISION_ITEMS, RewardConfig, RewardShaper, ViolationTracker, lat_excess, red_excess
 from vtd_rl.referee.core import Hit
 from vtd_rl.world.board import load_board, slice_board
 
@@ -416,3 +416,41 @@ def test_lane_profile_은_침범_깊이_시간에_비례해_깎는다():
 def test_잘못된_lane_profile_은_거부한다(bad):
     with pytest.raises(ValueError):
         RewardConfig(lane_profile=bad)
+
+
+@pytest.mark.parametrize("lat, want", [
+    (None, 0.0),
+    ((0.3, 999.0), 0.0),          # 문턱 안
+    ((0.9, 999.0), 0.5),          # 0.9 − 0.4
+    ((0.9, 30.0), 0.0),           # 40 m 안에 물체 — 끈다
+    ((0.9, float("inf")), 0.5),   # 물체 없음
+])
+def test_lat_excess(lat, want):
+    assert lat_excess(lat, 0.4, 40.0) == pytest.approx(want)
+
+
+def test_lat_profile_기본값은_꺼짐이고_항이_없다():
+    assert RewardConfig().lat_profile == 0.0
+    sh = RewardShaper(h_board(), RewardConfig())
+    sh.reset()
+    zero = {"control": [0.0, 0.0], "turn": 0}
+    assert "lat" not in sh.step([], 0.0, zero, zero, "running", lat=(1.0, 999.0)).terms
+
+
+def test_lat_profile_은_문턱_넘은_횡오차에_비례해_깎는다():
+    sh = RewardShaper(h_board(), RewardConfig(lat_profile=0.5))
+    sh.reset()
+    zero = {"control": [0.0, 0.0], "turn": 0}
+    out = sh.step([], 0.0, zero, zero, "running", lat=(1.0, 999.0))
+    assert out.terms["lat"] == pytest.approx(-0.5 * 0.6)
+    assert out.total == pytest.approx(sum(out.terms.values()))
+    calm = sh.step([], 0.0, zero, zero, "running", lat=(0.1, 999.0))
+    assert calm.terms["lat"] == 0.0 and str(calm.terms["lat"]) == "0.0"
+
+
+@pytest.mark.parametrize("kw", [{"lat_profile": -0.1}, {"lat_profile": float("nan")},
+                                {"lat_deadband": -0.1}, {"lat_deadband": float("inf")},
+                                {"lat_free_range": -1.0}, {"lat_free_range": float("nan")}])
+def test_잘못된_lat_설정은_거부한다(kw):
+    with pytest.raises(ValueError):
+        RewardConfig(**kw)

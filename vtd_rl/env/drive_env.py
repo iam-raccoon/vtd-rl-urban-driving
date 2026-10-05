@@ -9,6 +9,7 @@ SB3 의 `Monitor` 래퍼가 `info["episode"]`를 덮어써서 성적표가 조�
 그 뒤로 `step()`이 또 오면(정상적으로는 오면 안 되지만) 세계·심판·행 기록기를 더 건드리지
 않고 마지막 상태를 그대로 돌려준다 — `finish()`는 판마다 정확히 한 번만 불러야 한다.
 """
+import math
 import os
 from dataclasses import dataclass, field
 
@@ -144,8 +145,9 @@ class VtdDriveEnv(gym.Env):
         red = self._red_gap() if self.cfg.reward.red_profile > 0.0 else None
         lane = (self.referee.take_edge_excess() * self.cfg.world.dt
                 if self.cfg.reward.lane_profile > 0.0 else None)       # [m·행] × 프레임 dt = [m·s]
+        lat = self._lat_gap() if self.cfg.reward.lat_profile > 0.0 else None
         shaped = self._shaper.step(hits, max(0.0, self._info.s - s0), action, self._prev_action,
-                                   outcome, intent=self.intent, red=red, lane=lane)
+                                   outcome, intent=self.intent, red=red, lane=lane, lat=lat)
         self._prev_action = {"control": np.asarray(action["control"], dtype=np.float32).copy(),
                              "turn": int(action["turn"])}
         terminated = outcome in ("goal", "offroad") or shaped.collision
@@ -178,6 +180,14 @@ class VtdDriveEnv(gym.Env):
             if sig.tl_id == st.tl_id and sig.s + PASSED_MARGIN >= s:
                 return sig.s - s - rs.score_fma.FRONT, float(self.world.ego.v)
         return None
+
+    def _lat_gap(self):
+        """`(|경로 기준 횡오차|[m], 가장 가까운 물체까지 거리[m])` — M6y 횡오차 벌용. 물체가 없으면 거리 inf."""
+        if self._info is None:
+            return None
+        ego = self.world.ego
+        near = min((math.hypot(o.x - ego.x, o.y - ego.y) for o in self.state.objects), default=math.inf)
+        return abs(float(self._info.lateral)), float(near)
 
     def _frozen_step(self):
         """판이 이미 끝난 뒤 온 step() — 세계·심판·행 기록기를 더 밟지 않고 마지막 상태를 그대로 준다.

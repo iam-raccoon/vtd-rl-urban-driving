@@ -418,3 +418,37 @@ def test_lane_항은_행이_풀리는_뒤_중간_걸음에도_오고_마지막_�
     assert any(v < 0.0 for v in lanes[:-1])           # 판이 끝나기 전에도 풀린 행이 깎는다
     assert lanes[-1] < min(lanes[:-1])                # 끝나는 걸음은 남은 행까지 받아 가장 크다
     assert all(v <= 0.0 and str(v) != "-0.0" for v in lanes)
+
+
+def test_lat_gap_은_횡오차_크기와_물체_거리를_준다():
+    env = VtdDriveEnv([boards()[0]])
+    env.reset(seed=0)
+    env.step({"control": np.array([0.0, 0.0], dtype=np.float32), "turn": 0})
+    lat, near = env._lat_gap()
+    assert lat == pytest.approx(abs(env._info.lateral))
+    assert near == float("inf")                     # 이 판에는 물체가 없다
+    env.close()
+    ram = VtdDriveEnv([rammer_board()])
+    ram.reset(seed=0)
+    ram.step({"control": np.array([0.0, 0.0], dtype=np.float32), "turn": 0})
+    _lat, near = ram._lat_gap()
+    assert 50.0 < near < 70.0                       # 60 m 앞 정지 차량
+    ram.close()
+
+
+def test_lat_profile_을_켜면_경로를_벗어날_때_lat_항이_깎인다():
+    def run(cfg):
+        env = VtdDriveEnv([boards()[0]], EnvConfig(reward=cfg))
+        env.reset(seed=0)
+        lats = []
+        for k in range(120):
+            steer = -0.03 if k > 20 else 0.0
+            _o, _r, term, trunc, info = env.step({"control": np.array([steer, 0.3], dtype=np.float32), "turn": 0})
+            lats.append(info["reward_terms"].get("lat"))
+            if term or trunc:
+                break
+        env.close()
+        return lats
+    on = run(RewardConfig(lat_profile=0.5))
+    assert min(on) < 0.0
+    assert all(v is None for v in run(RewardConfig()))

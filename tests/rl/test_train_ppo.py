@@ -469,6 +469,16 @@ def test_lane_profile_인자가_RewardConfig에_반영된다():
     assert module._build_reward_cfg(module._build_parser().parse_args(["--out", "x"])).lane_profile == 0.0
 
 
+def test_lat_profile_인자가_RewardConfig에_반영된다():
+    module = _load_train_ppo_module()
+    a = module._build_parser().parse_args(["--out", "/tmp/불필요-존재안함", "--lat-profile", "0.5",
+                                           "--lat-deadband", "0.3", "--lat-free-range", "50"])
+    cfg = module._build_reward_cfg(a)
+    assert (cfg.lat_profile, cfg.lat_deadband, cfg.lat_free_range) == (0.5, 0.3, 50.0)
+    off = module._build_reward_cfg(module._build_parser().parse_args(["--out", "x"]))
+    assert (off.lat_profile, off.lat_deadband, off.lat_free_range) == (0.0, 0.4, 40.0)
+
+
 @pytest.mark.slow
 def test_comfort_on_intent가_승차감의_표본_잡음을_줄인다(tmp_path):
     """`--comfort-on-intent` 를 켜면 실행 행동이 아니라 정책의 의도(결정적 평균)의 변화로
