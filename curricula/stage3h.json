@@ -1,0 +1,255 @@
+{
+  "stage": 3,
+  "name": "학습용 어려운 코스 덧보기 — ③ 전체에서 실패가 나는 코스(A·D·E·G)만, 액터·흔들기 그대로(평가에 안 씀)",
+  "signals": "cycle",
+  "boards": [
+    {
+      "name": "course_A",
+      "route": "routes/HL_FMA_NEW_A.json",
+      "lane": "routes/HL_FMA_NEW_A_lane.json",
+      "jitter": {
+        "s": 40.0,
+        "lateral": 0.6
+      },
+      "actors": [
+        {
+          "id": 301,
+          "kind": "static",
+          "type": "vehicle",
+          "s": 560.0,
+          "lateral": 0.9,
+          "size": [
+            4.5,
+            1.8,
+            1.5
+          ]
+        },
+        {
+          "id": 302,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 1455.0,
+          "lateral": 1.05,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        },
+        {
+          "id": 303,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 1470.0,
+          "lateral": 1.05,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        },
+        {
+          "id": 304,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 1485.0,
+          "lateral": 1.05,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        }
+      ]
+    },
+    {
+      "name": "course_D",
+      "route": "routes/HL_FMA_NEW_D.json",
+      "lane": "routes/HL_FMA_NEW_D_lane.json",
+      "jitter": {
+        "s": 40.0,
+        "lateral": 0.6
+      },
+      "actors": [
+        {
+          "id": 321,
+          "kind": "static",
+          "type": "vehicle",
+          "s": 310.0,
+          "lateral": 0.9,
+          "size": [
+            4.5,
+            1.8,
+            1.5
+          ]
+        },
+        {
+          "id": 322,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 660.0,
+          "lateral": 1.05,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        },
+        {
+          "id": 323,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 800.0,
+          "lateral": 1.05,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        },
+        {
+          "id": 324,
+          "kind": "static",
+          "type": "vehicle",
+          "s": 2050.0,
+          "lateral": 0.9,
+          "size": [
+            4.5,
+            1.8,
+            1.5
+          ]
+        }
+      ]
+    },
+    {
+      "name": "course_E",
+      "route": "routes/HL_FMA_NEW_E.json",
+      "lane": "routes/HL_FMA_NEW_E_lane.json",
+      "jitter": {
+        "s": 40.0,
+        "lateral": 0.6
+      },
+      "actors": [
+        {
+          "id": 331,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 460.0,
+          "lateral": 1.05,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        },
+        {
+          "id": 332,
+          "kind": "static",
+          "type": "vehicle",
+          "s": 890.0,
+          "lateral": 0.9,
+          "size": [
+            4.5,
+            1.8,
+            1.5
+          ]
+        },
+        {
+          "id": 333,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 1630.0,
+          "lateral": -1.1,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        },
+        {
+          "id": 334,
+          "kind": "static",
+          "type": "vehicle",
+          "s": 1850.0,
+          "lateral": -0.9,
+          "size": [
+            4.5,
+            1.8,
+            1.5
+          ]
+        },
+        {
+          "id": 335,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 4050.0,
+          "lateral": -1.05,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        }
+      ]
+    },
+    {
+      "name": "course_G",
+      "route": "routes/HL_FMA_NEW_G.json",
+      "lane": "routes/HL_FMA_NEW_G_lane.json",
+      "jitter": {
+        "s": 40.0,
+        "lateral": 0.6
+      },
+      "actors": [
+        {
+          "id": 341,
+          "kind": "static",
+          "type": "vehicle",
+          "s": 570.0,
+          "lateral": -0.9,
+          "size": [
+            4.5,
+            1.8,
+            1.5
+          ]
+        },
+        {
+          "id": 342,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 640.0,
+          "lateral": -1.05,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        },
+        {
+          "id": 343,
+          "kind": "static",
+          "type": "obstacle",
+          "s": 2430.0,
+          "lateral": -1.05,
+          "size": [
+            0.15,
+            0.46,
+            0.61
+          ]
+        },
+        {
+          "id": 344,
+          "kind": "static",
+          "type": "vehicle",
+          "s": 2665.0,
+          "lateral": -0.9,
+          "size": [
+            4.5,
+            1.8,
+            1.5
+          ]
+        }
+      ]
+    }
+  ]
+}
