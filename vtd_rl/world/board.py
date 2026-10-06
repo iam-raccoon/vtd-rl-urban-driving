@@ -102,9 +102,14 @@ def load_board(entry: dict, signals: str = "always_green", variant: int | None =
     if cut is not None:
         # M7l — 어려운 장면 바로 앞에서 출발하는 짧은 판. 액터는 전체 판에서 (흔든 뒤) 지은 세계 좌표 그대로
         # 쓰고, 흔든 뒤 s 가 구간 안인 것만 남긴다. 구간 밖 액터는 자른 경로에서 만날 일이 없다.
-        if not (isinstance(cut, (list, tuple)) and len(cut) == 2 and float(cut[1]) - float(cut[0]) >= 1.0):
+        try:
+            s0, s1 = float(cut[0]), float(cut[1])
+            ok = isinstance(cut, (list, tuple)) and len(cut) == 2 and s1 - s0 >= 1.0
+        except (TypeError, ValueError, IndexError):
+            ok = False
+        if not ok:
             raise ValueError(f"판 항목 '{entry.get('name', '?')}' 의 slice 는 [s_from, s_to](s_to > s_from) 이어야 한다: {cut!r}")
-        s0, s1 = float(cut[0]), float(cut[1])
+        # 경로 JSON 자체에는 액터가 없다(2026-09-30 확인) — 자른 판에는 커리큘럼 액터만 남긴다.
         kept = [a for a, sp in zip(actors, specs) if s0 <= float(sp["s"]) <= s1]
         board = slice_board(board, s0, s1, name, signals)
         board.scenario.actors = kept

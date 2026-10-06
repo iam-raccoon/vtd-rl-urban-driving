@@ -88,9 +88,10 @@ def test_slice_변종은_흔든_뒤_구간_안_액터를_남긴다():
 def test_slice_가_없으면_예전과_같다():
     a, b = load_board(_g_entry()), load_board(_g_entry())
     assert a.route.total == b.route.total and len(a.scenario.actors) == len(b.scenario.actors) == 4
+    assert a.route.total > 2500.0                             # 자르지 않은 코스 전체
 
 
-@pytest.mark.parametrize("bad", [[2515.0], [2785.0, 2515.0], [2515.0, 2515.5], "x"])
+@pytest.mark.parametrize("bad", [[2515.0], [2785.0, 2515.0], [2515.0, 2515.5], "x", [None, 5.0]])
 def test_잘못된_slice_는_거부한다(bad):
     with pytest.raises(ValueError):
         load_board(_g_entry(name="bad", slice=bad))

@@ -64,5 +64,6 @@ class VariantSampler:
         entry = entries[j]
         board = load_board(entry, signals, variant=k)
         board.name = f"{board.name}#{label}"
-        board.cache_key = f"{entry['route']}|{entry['lane']}"
+        # M7l — 자른 판(`slice`)은 같은 경로 파일이라도 다른 판이다. 열쇠에 구간을 넣어 캐시가 섞이지 않게 한다.
+        board.cache_key = f"{entry['route']}|{entry['lane']}" + (f"|{entry['slice']}" if entry.get("slice") else "")
         return board, True
