@@ -154,6 +154,7 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 - [docs/reports/m7c-hard-courses.md](docs/reports/m7c-hard-courses.md) — 학습 판에 장애물 판(③c)·어려운 코스 덧보기(③h)를 더해도 **충돌은 안 준다**(대조 53.9 · ③c 68.8 · ③h 72.9 판). 고른 그물 +0.57 점 → 최고 그물 그대로. 끈질긴 실패는 course_G 4 번째 정지차
 - [docs/reports/m7d-obstacle-profile.md](docs/reports/m7d-obstacle-profile.md) — **새 최고 그물**(M7d O10 시드 1 · 50 만): 앞길 위 장애물 감속 곡선(통로 안 물체 앞에 설 수 있는 속도 초과분에 벌)으로 학생이 장애물에 반응. 새 시험 창 완주 **98.2%**, 완주 포함 점수 **93.58 대 88.94(+4.63)**, 완주 판 점수 95.3, 단계 ② 98.5(선생님 99.5)
 - [docs/reports/m7e-continue-obs.md](docs/reports/m7e-continue-obs.md) — 새 최고 그물에서 이어 돌리니 큰 창에서 넘은 체크포인트 1/48, 새 시험 창 +2.56(문턱 미달) → 최고 그물 그대로. course_G 4 번째 정지차가 여전히 남은 실패의 큰 몫
+- [docs/reports/m7f-variant-pool.md](docs/reports/m7f-variant-pool.md) — 변종 풀 1000 개로 학습해도 course_G 는 그대로(40.2 대 39.5). 고른 그물(M7f 시드 2 · 12.5 만)이 새 시험 창 +3.25 로 문턱을 넘어 **규칙대로 교체**했지만 큰 선택 창에서는 −0.38 이라 근거는 약하다(앞선 최고가 창마다 88.9~93.6 으로 흔들림). 다음부터 교체 규칙을 조인다
 
 ### 여기까지 온 곳
 **PPO 는 M3 모방 학생을 한 번도 못 넘었다 — 학습의 어느 시점에서도.** 목표 판정은 M4a 부터 지금까지
