@@ -157,6 +157,7 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 - [docs/reports/m7f-variant-pool.md](docs/reports/m7f-variant-pool.md) — 변종 풀 1000 개로 학습해도 course_G 는 그대로(40.2 대 39.5). 고른 그물(M7f 시드 2 · 12.5 만)이 새 시험 창 +3.25 로 문턱을 넘어 **규칙대로 교체**했지만 큰 선택 창에서는 −0.38 이라 근거는 약하다(앞선 최고가 창마다 88.9~93.6 으로 흔들림). 다음부터 교체 규칙을 조인다
 - [docs/reports/m7g-block-penalty.md](docs/reports/m7g-block-penalty.md) — 장애물 뒤에 머무는 벌(c=1.0)은 칸 평균으로 충돌을 줄이고 완주를 늘린다(충돌 57.3 → 37.6, 완주 312.7 → 333.2). course_G 는 기준에 조금 못 미침(+7.4). 고른 그물 +0.89 → 최고 그물 그대로
 - [docs/reports/m7h-lim-anticipate.md](docs/reports/m7h-lim-anticipate.md) — **앞당긴 제한속도 관측**(앞에 낮은 제한속도가 있으면 미리 낮아진 값): 학습 없이 켜기만 해도 보호구역 중대 0.69 → 0.09(−87%). 같은 그물에서 두 창 모두 +0.9 점으로 일관되지만 교체 문턱 3 점 미달 → 배포 묶음 그대로
+- [docs/reports/m7i-overlap-profile.md](docs/reports/m7i-overlap-profile.md) — 통로와 겹친 폭 벌(c=2)은 칸 평균 충돌을 줄인다(57.3 → 35.1, 완주 312.7 → 338.9). 고른 그물 +0.50 → 최고 그물 그대로. 점수는 큰 창 90 근처에서 정체
 
 ### 여기까지 온 곳
 **PPO 는 M3 모방 학생을 한 번도 못 넘었다 — 학습의 어느 시점에서도.** 목표 판정은 M4a 부터 지금까지
