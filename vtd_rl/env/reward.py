@@ -113,6 +113,11 @@ class RewardConfig:
     # 걸음마다 block_profile 을 깎는다(항 `block`). 통로를 벗어나거나 지나가면 사라진다. 기본 0 이면 꺼짐.
     block_profile: float = 0.0
     block_range: float = 15.0        # [m]
+    # M7i — 통로와 겹친 폭 벌. 통로 안 ovl_range 앞의 멈춘 장애물(사람·자전거 제외)마다 겹친 폭[m] × 가까움
+    # 가중(1 − gap/ovl_range) 중 가장 큰 값에 ovl_profile 을 곱해 걸음마다 깎는다(항 `ovl`). 옆으로 비킬수록
+    # 연속으로 준다. 기본 0 이면 꺼짐.
+    ovl_profile: float = 0.0
+    ovl_range: float = 30.0          # [m]
 
     def __post_init__(self):
         pairs = []
@@ -156,6 +161,10 @@ class RewardConfig:
             raise ValueError(f"block_profile 은 유한한 0 이상이어야 한다: {self.block_profile}")
         if not math.isfinite(self.block_range) or self.block_range < 0.0:
             raise ValueError(f"block_range 는 유한한 0 이상이어야 한다: {self.block_range}")
+        if not math.isfinite(self.ovl_profile) or self.ovl_profile < 0.0:
+            raise ValueError(f"ovl_profile 은 유한한 0 이상이어야 한다: {self.ovl_profile}")
+        if not math.isfinite(self.ovl_range) or self.ovl_range <= 0.0:
+            raise ValueError(f"ovl_range 는 유한한 양수여야 한다: {self.ovl_range}")
 
 
 @dataclass
@@ -238,7 +247,7 @@ class RewardShaper:
         self._prev_intent = None
 
     def step(self, hits, ds: float, action, prev_action, outcome: str, intent=None, red=None,
-             lane=None, lat=None, obs=None, block=None) -> RewardStep:
+             lane=None, lat=None, obs=None, block=None, ovl=None) -> RewardStep:
         cfg = self.cfg
         # 충돌 항목(⑪⑭)은 `collision` 항이 따로 −50 을 물리므로 위반 합계에서 뺀다(기존 규칙).
         # `charge` 가 감점까지 내므로, 충돌 히트를 **처음부터 갈라서** 두 번 부른다 —
@@ -292,4 +301,6 @@ class RewardShaper:
         if cfg.block_profile > 0.0:   # 끈 실행은 항 자체가 없다
             near = block is not None and block < cfg.block_range
             terms["block"] = 0.0 - cfg.block_profile if near else 0.0
+        if cfg.ovl_profile > 0.0:     # 끈 실행은 항 자체가 없다
+            terms["ovl"] = 0.0 - cfg.ovl_profile * (ovl or 0.0)
         return RewardStep(sum(terms.values()), terms, collision, len(counted) + len(col_counted))

@@ -523,6 +523,18 @@ def test_block_profile_인자가_RewardConfig에_반영되고_hparams_로_되살
     assert (off.block_profile, off.block_range) == (0.0, 15.0)
 
 
+def test_ovl_profile_인자가_RewardConfig에_반영되고_hparams_로_되살아난다():
+    from vtd_rl.rl.reward_cfg import reward_config_from_hparams
+    module = _load_train_ppo_module()
+    a = module._build_parser().parse_args(["--out", "x", "--ovl-profile", "5", "--ovl-range", "40"])
+    cfg = module._build_reward_cfg(a)
+    assert (cfg.ovl_profile, cfg.ovl_range) == (5.0, 40.0)
+    back = reward_config_from_hparams(vars(a))
+    assert (back.ovl_profile, back.ovl_range) == (5.0, 40.0)
+    off = module._build_reward_cfg(module._build_parser().parse_args(["--out", "x"]))
+    assert (off.ovl_profile, off.ovl_range) == (0.0, 30.0)
+
+
 def test_lim_anticipate_인자가_학습_환경_관측에_닿는다():
     module = _load_train_ppo_module()
     a = module._build_parser().parse_args(["--out", "x", "--lim-anticipate"])

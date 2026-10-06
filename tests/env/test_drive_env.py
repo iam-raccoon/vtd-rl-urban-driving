@@ -557,3 +557,45 @@ def test_block_profile_을_켜면_멈춘_차_뒤에서_block_항이_깎인다():
     on = run(RewardConfig(block_profile=0.5))
     assert set(on) == {-0.5, 0.0}
     assert all(v is None for v in run(RewardConfig()))
+
+
+def test_ovl_gap_은_겹친_폭에_가까움_가중을_곱한다(monkeypatch):
+    from dataclasses import replace
+    env = VtdDriveEnv([rammer_board()])
+    env.reset(seed=0)
+    env.step({"control": np.array([0.0, 0.0], dtype=np.float32), "turn": 0})
+    assert env._ovl_gap() is None                     # 60 m 앞 — ovl_range 30 m 밖
+    ego = env.world.ego
+    car = env.state.objects[0]
+    import math
+    def put(fx, fy, **kw):                            # 내 차 기준 (fx, fy) 에 물체를 놓는다
+        c, s = math.cos(ego.heading), math.sin(ego.heading)
+        return replace(car, x=ego.x + fx * c - fy * s, y=ego.y + fx * s + fy * c, **kw)
+    gap_of = lambda fx: fx - rs.score_fma.FRONT - car.length / 2.0
+    lim = car.width / 2.0 + 0.943 + 0.3
+    monkeypatch.setattr(env.state, "objects", [put(20.0, -1.0)])
+    assert env._ovl_gap() == pytest.approx((lim - 1.0) * (1.0 - gap_of(20.0) / 30.0))
+    monkeypatch.setattr(env.state, "objects", [put(20.0, -(lim + 0.1))])      # 통로 밖
+    assert env._ovl_gap() is None or env._ovl_gap() == pytest.approx(0.0)
+    monkeypatch.setattr(env.state, "objects", [put(20.0, -1.0, speed=3.0)])  # 움직이는 물체
+    assert env._ovl_gap() is None
+    monkeypatch.setattr(env.state, "objects", [put(-5.0, -1.0)])              # 뒤
+    assert env._ovl_gap() is None
+    env.close()
+
+
+def test_ovl_profile_을_켜면_멈춘_차에_겹친_채_다가갈_때_ovl_항이_깎인다():
+    def run(cfg):
+        env = VtdDriveEnv([rammer_board()], EnvConfig(reward=cfg))
+        env.reset(seed=0)
+        vals = []
+        for _ in range(400):
+            _o, _r, term, trunc, info = env.step({"control": np.array([0.0, 0.3], dtype=np.float32), "turn": 0})
+            vals.append(info["reward_terms"].get("ovl"))
+            if term or trunc:
+                break
+        env.close()
+        return vals
+    on = run(RewardConfig(ovl_profile=2.0))
+    assert min(on) < 0.0
+    assert all(v is None for v in run(RewardConfig()))

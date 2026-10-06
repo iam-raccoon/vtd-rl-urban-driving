@@ -557,3 +557,29 @@ def test_block_profile_은_가까운_멈춘_장애물_뒤에서만_깎는다(blo
 def test_잘못된_block_설정은_거부한다(kw):
     with pytest.raises(ValueError):
         RewardConfig(**kw)
+
+
+def test_ovl_profile_기본값은_꺼짐이고_항이_없다():
+    assert RewardConfig().ovl_profile == 0.0
+    sh = RewardShaper(h_board(), RewardConfig())
+    sh.reset()
+    zero = {"control": [0.0, 0.0], "turn": 0}
+    assert "ovl" not in sh.step([], 0.0, zero, zero, "running", ovl=0.5).terms
+
+
+@pytest.mark.parametrize("ovl, want", [(None, 0.0), (0.0, 0.0), (0.4, -0.8)])
+def test_ovl_profile_은_겹친_폭에_비례해_깎는다(ovl, want):
+    sh = RewardShaper(h_board(), RewardConfig(ovl_profile=2.0))
+    sh.reset()
+    zero = {"control": [0.0, 0.0], "turn": 0}
+    out = sh.step([], 0.0, zero, zero, "running", ovl=ovl)
+    assert out.terms["ovl"] == pytest.approx(want)
+    assert str(out.terms["ovl"]) != "-0.0"
+    assert out.total == pytest.approx(sum(out.terms.values()))
+
+
+@pytest.mark.parametrize("kw", [{"ovl_profile": -0.1}, {"ovl_profile": float("nan")},
+                                {"ovl_range": 0.0}, {"ovl_range": float("inf")}])
+def test_잘못된_ovl_설정은_거부한다(kw):
+    with pytest.raises(ValueError):
+        RewardConfig(**kw)

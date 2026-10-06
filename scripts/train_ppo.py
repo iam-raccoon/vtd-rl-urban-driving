@@ -137,7 +137,7 @@ def _reward_terms_per_env(info: dict, n_envs: int) -> list:
     일부 환경만 그 항목을 냈을 때(병렬 학습의 정상 상태 — 일부는 방금 리셋, 나머지는 주행
     중)는 gymnasium 이 나머지 자리를 채움값(실측: 0.0)으로 메우고 `_<항목명>` 불리언 마스크
     배열을 같이 낸다(2026-09-26 실측, `.venv/.../gymnasium/vector/vector_env.py::_add_info`
-    소스로 직접 확인). 채움값이 우연히 0.0 이고 아홉 항목(`TERM_KEYS`)이 전부 순가산량이라 지금은 걸러내지
+    소스로 직접 확인). 채움값이 우연히 0.0 이고 열 항목(`TERM_KEYS`)이 전부 순가산량이라 지금은 걸러내지
     않아도 수치적으로 무해하지만, 그건 gymnasium 구현 세부에 기대는 것이다 — 여기서는 마스크를
     직접 읽어 거짓인 자리를 아예 dict 에서 뺀다. 마스크 키(`_progress` 등) 자체가 없으면
     (실측: 그 항목을 하나도 낸 환경이 없어 항목 키조차 없을 때만 이렇다) 전원 유효로 본다.
@@ -330,6 +330,11 @@ def _build_parser() -> argparse.ArgumentParser:
                          " 걸음마다 이 값을 깎는다. 0 이면 꺼짐")
     ap.add_argument("--block-range", dest="block_range", type=float, default=default_reward_cfg.block_range,
                     help="머무는 벌을 거는 거리[m]")
+    ap.add_argument("--ovl-profile", dest="ovl_profile", type=float, default=default_reward_cfg.ovl_profile,
+                    help="통로와 겹친 폭 벌(M7i). 통로 안 --ovl-range 앞 멈춘 장애물과 겹친 폭[m] × 가까움 가중에"
+                         " 이 값을 곱해 걸음마다 깎는다. 0 이면 꺼짐")
+    ap.add_argument("--ovl-range", dest="ovl_range", type=float, default=default_reward_cfg.ovl_range,
+                    help="겹친 폭 벌을 거는 거리[m]")
     ap.add_argument("--lim-anticipate", action="store_true",
                     help="학습 환경 관측의 제한속도를 앞당긴 값으로(M7h). 앞에 낮은 제한속도가 있으면"
                          " 거기까지 줄이는 곡선을 따라 미리 낮아진 값을 준다. 관측 차원은 그대로")
@@ -367,12 +372,12 @@ def _build_cfg(a) -> PPOConfig:
 
 
 def _build_reward_cfg(a) -> RewardConfig:
-    """`RewardConfig` 는 frozen dataclass 라 `dataclasses.replace` 로 CLI 로 연 스무 필드만 덮어쓴다.
+    """`RewardConfig` 는 frozen dataclass 라 `dataclasses.replace` 로 CLI 로 연 스물두 필드만 덮어쓴다.
 
     인자를 하나도 안 주면 `a.comfort_steer`/`a.comfort_accel`/`a.comfort_on_intent`/
     `a.violation_mode`/`a.red_profile`/`a.red_decel`/`a.lane_profile`/`a.lat_profile`/`a.lat_deadband`/
     `a.lat_free_range`/`a.collision`/`a.offroad`/`a.stall`/`a.obs_profile`/`a.obs_decel`/`a.obs_buffer`/
-    `a.obs_margin`/`a.block_profile`/`a.block_range` 가 이미
+    `a.obs_margin`/`a.block_profile`/`a.block_range`/`a.ovl_profile`/`a.ovl_range` 가 이미
     `RewardConfig()` 자신의 기본값이고,
     `a.item_scale` 은 `None`(→ `()`)이므로(위 `_build_parser` 참고) 이 함수가 만드는 `cfg` 는
     `RewardConfig()` 와 완전히 같다 — 기본 동작이 안 바뀐다(`_build_cfg` 와 같은 패턴).
@@ -387,7 +392,8 @@ def _build_reward_cfg(a) -> RewardConfig:
                                collision=a.collision, offroad=a.offroad,
                                stall=a.stall, obs_profile=a.obs_profile, obs_decel=a.obs_decel,
                                obs_buffer=a.obs_buffer, obs_margin=a.obs_margin,
-                               block_profile=a.block_profile, block_range=a.block_range)
+                               block_profile=a.block_profile, block_range=a.block_range,
+                               ovl_profile=a.ovl_profile, ovl_range=a.ovl_range)
 
 
 def _build_env_cfg(a, reward_cfg: RewardConfig) -> EnvConfig:
@@ -665,7 +671,7 @@ def main():
             # `stats["updates"]` 는 이 롤아웃 안에서 도른 미니배치 최적화 걸음 수(ppo.update() 자체
             # 반환값)다 — 바깥 루프 반복 횟수(우리 `updates` 변수)와 이름이 겹치므로 `iter` 로 적는다.
             # `tracker.stats()`(rollout_return_mean/_n·rollout_len_mean)와
-            # `terms.stats()`(term_progress_mean/_time_mean/_violation_mean/_comfort_mean/_red_mean/_lane_mean/_lat_mean/_obs_mean/_block_mean/_n)와
+            # `terms.stats()`(term_progress_mean/_time_mean/_violation_mean/_comfort_mean/_red_mean/_lane_mean/_lat_mean/_obs_mean/_block_mean/_ovl_mean/_n)와
             # `policy_drift()`(drift_l2/_rel/_log_std/_rest_rel)는 이름이 서로 겹치지 않고
             # `stats`(policy/value/entropy/approx_kl/clip_frac/imitation/imitation_coef/anchor/updates)
             # 와도 안 겹친다(M4a 에서 `**stats` 가 바깥 `updates` 를 조용히 덮어쓴 적이 있어

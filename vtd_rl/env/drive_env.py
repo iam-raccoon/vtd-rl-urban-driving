@@ -151,9 +151,10 @@ class VtdDriveEnv(gym.Env):
         lat = self._lat_gap() if self.cfg.reward.lat_profile > 0.0 else None
         obs = self._obs_gap() if self.cfg.reward.obs_profile > 0.0 else None
         block = self._block_gap() if self.cfg.reward.block_profile > 0.0 else None
+        ovl = self._ovl_gap() if self.cfg.reward.ovl_profile > 0.0 else None
         shaped = self._shaper.step(hits, max(0.0, self._info.s - s0), action, self._prev_action,
                                    outcome, intent=self.intent, red=red, lane=lane, lat=lat, obs=obs,
-                                   block=block)
+                                   block=block, ovl=ovl)
         self._prev_action = {"control": np.asarray(action["control"], dtype=np.float32).copy(),
                              "turn": int(action["turn"])}
         # M7a — 정체 벌을 주면 정체는 실패로 끝난다(기본 0 이면 예전처럼 아래에서 잘리기만 한다).
@@ -247,6 +248,38 @@ class VtdDriveEnv(gym.Env):
             gap = max(0.0, fx - rs.score_fma.FRONT - o.length / 2.0)
             if best is None or gap < best:
                 best = gap
+        return best
+
+    def _ovl_gap(self):
+        """통로와 겹친 폭 × 가까움 가중의 최댓값(M7i), 볼 물체가 없으면 None.
+
+        물체는 `_block_gap` 과 같다(높이 ≥ 0.25 m, 멈춤 < 0.5 m/s, 사람·자전거 아님). 앞(fx > 0)이고
+        `gap < ovl_range` 인 것마다 겹친 폭 `max(0, 물체 반폭 + 내 차 반폭 + obs_margin − |fy|)` 에
+        `1 − gap/ovl_range` 를 곱한다.
+        """
+        if self._info is None:
+            return None
+        import vtd_io                                   # rule_stack 이 경로를 잡아 둔다
+        ego = self.world.ego
+        ch, sh = math.cos(-ego.heading), math.sin(-ego.heading)
+        margin, rng = self.cfg.reward.obs_margin, self.cfg.reward.ovl_range
+        best = None
+        for o in self.state.objects:
+            if o.height < ROAD_SURFACE_H or abs(float(o.speed)) >= BLOCK_STILL_V:
+                continue
+            if vtd_io.classify_object(o.length, o.width, o.height) == vtd_io.ObjectClass.VRU:
+                continue
+            dx, dy = o.x - ego.x, o.y - ego.y
+            fx, fy = dx * ch - dy * sh, dx * sh + dy * ch
+            if fx <= 0.0:
+                continue
+            gap = max(0.0, fx - rs.score_fma.FRONT - o.length / 2.0)
+            if gap >= rng:
+                continue
+            overlap = max(0.0, o.width / 2.0 + EGO_HALF_W + margin - abs(fy))
+            val = overlap * (1.0 - gap / rng)
+            if best is None or val > best:
+                best = val
         return best
 
     def _frozen_step(self):
