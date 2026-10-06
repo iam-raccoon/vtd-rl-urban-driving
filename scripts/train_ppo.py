@@ -34,6 +34,7 @@ import torch
 REPO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, REPO)
 from vtd_rl.env.drive_env import EnvConfig  # noqa: E402
+from vtd_rl.env.observation import ObsConfig  # noqa: E402
 from vtd_rl.env.reward import RewardConfig  # noqa: E402
 from vtd_rl.eval.verdict import completed_only, judge, major_total  # noqa: E402
 from vtd_rl.policy import device as pick_device  # noqa: E402
@@ -329,6 +330,9 @@ def _build_parser() -> argparse.ArgumentParser:
                          " 걸음마다 이 값을 깎는다. 0 이면 꺼짐")
     ap.add_argument("--block-range", dest="block_range", type=float, default=default_reward_cfg.block_range,
                     help="머무는 벌을 거는 거리[m]")
+    ap.add_argument("--lim-anticipate", action="store_true",
+                    help="학습 환경 관측의 제한속도를 앞당긴 값으로(M7h). 앞에 낮은 제한속도가 있으면"
+                         " 거기까지 줄이는 곡선을 따라 미리 낮아진 값을 준다. 관측 차원은 그대로")
     ap.add_argument("--log-std-max", type=float, default=None,
                     help="정책의 σ 상한(log 스케일)을 덮어쓴다. 기본값은 체크포인트/PolicyConfig "
                          "값 그대로(0.5). M4c 는 3M 에서 결정적 모드만 무너지는 것을 봤는데 σ 와 "
@@ -384,6 +388,14 @@ def _build_reward_cfg(a) -> RewardConfig:
                                stall=a.stall, obs_profile=a.obs_profile, obs_decel=a.obs_decel,
                                obs_buffer=a.obs_buffer, obs_margin=a.obs_margin,
                                block_profile=a.block_profile, block_range=a.block_range)
+
+
+def _build_env_cfg(a, reward_cfg: RewardConfig) -> EnvConfig:
+    """학습 환경 설정 — 보상 설정과 관측 설정(`--lim-anticipate`)을 묶는다. `--smoke` 면 시간 제한을 줄인다."""
+    obs = ObsConfig(lim_anticipate=bool(getattr(a, "lim_anticipate", False)))
+    if a.smoke:
+        return EnvConfig(world=WorldConfig(time_limit_scale=0.1), reward=reward_cfg, obs=obs)
+    return EnvConfig(reward=reward_cfg, obs=obs)
 
 
 def _build_optimizer(net, cfg: PPOConfig) -> torch.optim.Optimizer:
@@ -512,8 +524,7 @@ def main():
     # 요약용 호출, `evaluate_teacher(boards, seeds=(0,))`)뿐이다 — 선생님 점수는 정책 행동에
     # 의존하지 않아 보상 설정과 무관하다.
     reward_cfg = _build_reward_cfg(a)
-    train_env_cfg = (EnvConfig(world=WorldConfig(time_limit_scale=0.1), reward=reward_cfg)
-                     if a.smoke else EnvConfig(reward=reward_cfg))
+    train_env_cfg = _build_env_cfg(a, reward_cfg)
 
     cfg = _build_cfg(a)
     # 이번 실행에 쓴 하이퍼파라미터 — log.jsonl 각 줄과 요약 JSON 에 그대로 싣는다. 성적표가

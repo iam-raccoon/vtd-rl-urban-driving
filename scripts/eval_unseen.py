@@ -34,6 +34,8 @@ import time
 REPO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, REPO)
 from vtd_rl import rule_stack as rs  # noqa: E402
+from vtd_rl.env.drive_env import EnvConfig  # noqa: E402
+from vtd_rl.env.observation import ObsConfig  # noqa: E402
 from vtd_rl.policy import device as pick_device  # noqa: E402
 from vtd_rl.policy.evaluate import evaluate_policy  # noqa: E402
 from vtd_rl.policy.net import DrivePolicy  # noqa: E402
@@ -100,13 +102,13 @@ def window_label(variants: int, offset: int) -> str:
     return _window_label(variants, offset)
 
 
-def evaluate_stage(net, boards, eval_seeds: int) -> dict:
+def evaluate_stage(net, boards, eval_seeds: int, config=None) -> dict:
     """단계 하나. 단계마다 **따로** 부른다 — 판 이름이 단계끼리 같아서(신호·액터만 다르다)
 
     한 번에 넘기면 `VtdDriveEnv` 의 세계 캐시가 "다른 판을 준다" 로 죽는다
     (`probe_anchor.py`·`refit_m3.py` 에 같은 주석).
     """
-    ev = evaluate_policy(net, boards, seeds=tuple(range(eval_seeds)))
+    ev = evaluate_policy(net, boards, seeds=tuple(range(eval_seeds)), config=config)
     return {"goal_rate": ev["goal_rate"], "mean_score": ev["mean_score"],
             "mean_score_completed": ev["mean_score_completed"],
             "mean_reward": ev["mean_reward"],
@@ -124,7 +126,8 @@ def report_lines(a, rows, window, dev) -> list:
            f"({a.seen_variants}벌)이고 여기는 그 **안 쓴 변종**이다."
            + ("  ⚠ `--include-seen` 으로 **일부러 겹치게** 쟀다 — 이 숫자는 선택 편향이"
               " 든 쪽이다." if a.include_seen else ""),
-           f"- 평가 시드 {a.eval_seeds}개 · 결정적 행동", "",
+           f"- 평가 시드 {a.eval_seeds}개 · 결정적 행동",
+           *(["- 관측: 앞당긴 제한속도"] if getattr(a, "lim_anticipate", False) else []), "",
            "| 단계 | 변종 | 판 수 | 판별 평가 | 완주율 | 점수 | 총걸음 |",
            "|---|---|---:|---:|---:|---:|---:|"]
     for name, row in rows:
@@ -152,7 +155,7 @@ def dry_run_lines(a, window) -> list:
     return out
 
 
-def main():
+def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="채택된 체크포인트를 안 쓴 변종으로 다시 잰다")
     ap.add_argument("--ckpt", required=True,
                     help="평가할 `DrivePolicy` 체크포인트(보통 `<실행>/policy-best.pt`)")
@@ -175,6 +178,13 @@ def main():
     ap.add_argument("--out", default=None, help="성적표 경로(안 주면 표준출력)")
     ap.add_argument("--dry-run", action="store_true",
                     help="아무것도 안 돌리고 무엇을 어느 변종으로 잴지만 찍는다")
+    ap.add_argument("--lim-anticipate", action="store_true",
+                    help="평가 환경 관측의 제한속도를 앞당긴 값으로(M7h) — 그렇게 학습한 그물을 잴 때 켠다")
+    return ap
+
+
+def main():
+    ap = _build_parser()
     a = ap.parse_args()
 
     a.stage = list(a.stage) or list(DEFAULT_STAGES)
@@ -215,12 +225,13 @@ def main():
     net = DrivePolicy.load(a.ckpt, device=dev)
     net.clamp_log_std()          # 옛 체크포인트의 log_std 가 지금 범위 밖일 수 있다
 
+    config = EnvConfig(obs=ObsConfig(lim_anticipate=True)) if a.lim_anticipate else None
     t0, rows = time.perf_counter(), []
     for name in a.stage:
         boards, varied = stage_boards(name, a.variants, a.variant_offset)
         print(f"[{name}] 판 {len(boards)}개 [{window if varied else '원본'}] …",
               file=sys.stderr, flush=True)
-        row = evaluate_stage(net, boards, a.eval_seeds)
+        row = evaluate_stage(net, boards, a.eval_seeds, config=config)
         row.update({"boards": len(boards), "varied": varied,
                     "window": window if varied else "original"})
         rows.append((name, row))

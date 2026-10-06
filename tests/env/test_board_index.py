@@ -80,3 +80,20 @@ def test_cache_key_가_같으면_색인을_같이_쓴다():
     clear_board_index_cache()
     assert board_index(a) is board_index(b)
     clear_board_index_cache()
+
+
+def test_lim_drop_은_제한속도가_내려가는_자리만_오름차순으로_담는다():
+    import json
+    cur = json.load(open("curricula/stage2.json"))
+    found = False
+    for e in cur["boards"]:
+        idx = board_index(load_board(e))
+        assert idx.lim_drop_s == sorted(idx.lim_drop_s)
+        assert len(idx.lim_drop_s) == len(idx.lim_drop_v)
+        lims = [(p or {}).get("lim") for p in idx.board.lane_plan]
+        for s, v in zip(idx.lim_drop_s, idx.lim_drop_v):
+            i = idx.board.route.cum.index(s)
+            prev = next(x for x in reversed(lims[:i]) if x)
+            assert lims[i] == v and v < prev
+        found = found or bool(idx.lim_drop_s)
+    assert found                                         # 단계 ② 코스 어딘가에는 보호구역이 있다

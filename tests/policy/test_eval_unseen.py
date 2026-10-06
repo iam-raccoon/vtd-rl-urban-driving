@@ -50,7 +50,7 @@ def seen_boards(ev, monkeypatch):
     """평가에 **실제로 넘어간 판 목록**을 단계별로 적어 둔다 — 판은 진짜로 짓는다."""
     got = {}
 
-    def fake_eval(net, boards, seeds=(0,)):
+    def fake_eval(net, boards, seeds=(0,), config=None):
         got.setdefault(len(got), None)
         got[tuple(b.name for b in boards)] = len(boards)
         return _fake_ev()
@@ -183,3 +183,29 @@ def test_잘못된_인자는_거부한다(ev, ckpt, monkeypatch):
                                           "--dry-run", *extra])
         with pytest.raises(SystemExit):
             ev.main()
+
+
+def test_eval_unseen_lim_anticipate_인자(ev):
+    a = ev._build_parser().parse_args(["--ckpt", "x", "--lim-anticipate"])
+    assert a.lim_anticipate is True
+    assert ev._build_parser().parse_args(["--ckpt", "x"]).lim_anticipate is False
+
+
+def test_lim_anticipate_를_켜면_평가_환경_설정과_성적표에_닿는다(ev, ckpt, tmp_path, monkeypatch, capsys):
+    cfgs = []
+
+    def fake_eval(net, boards, seeds=(0,), config=None):
+        cfgs.append(config)
+        return _fake_ev()
+
+    monkeypatch.setattr(ev, "evaluate_policy", fake_eval)
+    out = tmp_path / "u.md"
+    _run(ev, monkeypatch, capsys, ["--ckpt", str(ckpt), "--stage", "stage1", "--eval-seeds", "1",
+                                   "--device", "cpu", "--lim-anticipate", "--out", str(out)])
+    assert cfgs and all(c is not None and c.obs.lim_anticipate is True for c in cfgs)
+    assert "관측: 앞당긴 제한속도" in out.read_text(encoding="utf-8")
+    cfgs.clear()
+    _run(ev, monkeypatch, capsys, ["--ckpt", str(ckpt), "--stage", "stage1", "--eval-seeds", "1",
+                                   "--device", "cpu", "--out", str(out)])
+    assert cfgs == [None]
+    assert "앞당긴" not in out.read_text(encoding="utf-8")

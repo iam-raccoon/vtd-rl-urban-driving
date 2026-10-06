@@ -24,6 +24,7 @@ class BoardIndex:
         self.stopline_s = self._project_stoplines(route, db["stoplines_all"])
         self.zone = [bool(p and (p.get("lim") or 99.0) <= ZONE_LIM) for p in board.lane_plan]
         self.junction_s = self._junctions(route, board.lane_plan)
+        self.lim_drop_s, self.lim_drop_v = self._lim_drops(route, board.lane_plan)
         self._kinds = {"signal": self.signal_s, "crosswalk": self.crosswalk_s,
                        "stopline": self.stopline_s, "junction": self.junction_s}
 
@@ -41,6 +42,23 @@ class BoardIndex:
                 out.append(route.cum[i])
             prev = cur
         return out
+
+    @staticmethod
+    def _lim_drops(route, lane_plan):
+        """차로계획의 제한속도가 **내려가는** 자리 — `(s 목록, 내려간 뒤 값 목록)`(M7h 앞당긴 제한속도).
+
+        제한속도가 없는 점(None·0)은 건너뛰고, 직전의 있는 값보다 작아지는 첫 점만 담는다.
+        """
+        out_s, out_v, prev = [], [], None
+        for i, p in enumerate(lane_plan):
+            lim = (p or {}).get("lim")
+            if not lim:
+                continue
+            if prev is not None and lim < prev - 1e-6:
+                out_s.append(route.cum[i])
+                out_v.append(float(lim))
+            prev = lim
+        return out_s, out_v
 
     @staticmethod
     def _project(route, points):

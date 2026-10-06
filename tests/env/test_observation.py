@@ -1,4 +1,5 @@
 import math
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -6,7 +7,8 @@ import pytest
 from vtd_rl import rule_stack as rs
 from vtd_rl.env.board_index import board_index
 from vtd_rl.env.drive_env import VtdDriveEnv
-from vtd_rl.env.observation import ObsConfig, _object_class, build_observation, observation_space
+from vtd_rl.env.observation import (ObsConfig, _object_class, anticipated_limit, build_observation,
+                                    observation_space)
 from vtd_rl.env.teacher_policy import TeacherPolicy
 from vtd_rl.referee.judges.contact import PERSON_MIN_H
 from vtd_rl.world.board import load_board, slice_board
@@ -182,3 +184,58 @@ def test_물체_종류는_접촉_판정기와_같은_기준():
         vehicle = length > rs.score_fma.PED_L
         assert (got == [0.0, 1.0, 0.0]) == person, name
         assert (got == [1.0, 0.0, 0.0]) == vehicle, name
+
+
+def _idx(drops):
+    return SimpleNamespace(lim_drop_s=[d[0] for d in drops], lim_drop_v=[d[1] for d in drops])
+
+
+@pytest.mark.parametrize("s, lim, want", [
+    (0.0, 14.0, 14.0),                                   # sqrt(64 + 3·95) ≈ 18.7 > 14
+    (80.0, 14.0, (64.0 + 3.0 * 15.0) ** 0.5),            # ds 20 − margin 5 = 15
+    (97.0, 14.0, 8.0),                                   # margin 안: 새 제한속도
+    (101.0, 14.0, 14.0),                                 # 이미 지났다
+    (0.0, 6.0, 6.0),                                     # 지금 제한이 더 낮다
+])
+def test_anticipated_limit(s, lim, want):
+    cfg = ObsConfig(lim_anticipate=True)
+    assert anticipated_limit(_idx([(100.0, 8.0)]), s, lim, cfg) == pytest.approx(want)
+
+
+def test_anticipated_limit_은_lookahead_밖을_안_본다():
+    cfg = ObsConfig(lim_anticipate=True, lim_lookahead=50.0)
+    assert anticipated_limit(_idx([(100.0, 1.0)]), 0.0, 14.0, cfg) == pytest.approx(14.0)
+
+
+def test_lim_anticipate_기본값은_꺼짐():
+    assert ObsConfig().lim_anticipate is False
+
+
+def test_lim_anticipate_를_끄면_관측이_예전과_같고_켜면_lim_이_같거나_낮다():
+    """코스 A 의 첫 내려감(s≈1435 m, 50 → 30 km/h) 앞뒤를 자른 판을 선생님이 몬다 — 일정 조향으로는
+
+    출발 직후 길을 벗어나 내려감에 닿지 못한다. 앞당김이 실제로 낮춘 걸음이 있어야 뜻이 있다."""
+    import json
+    from vtd_rl.env.drive_env import EnvConfig
+    e = json.load(open("curricula/stage2.json"))["boards"][0]
+    b = slice_board(load_board(e), 1300.0, 1500.0, "A_1300_1500")
+    off, on = VtdDriveEnv([b]), VtdDriveEnv([b], EnvConfig(obs=ObsConfig(lim_anticipate=True)))
+    t_off, t_on = TeacherPolicy(off), TeacherPolicy(on)
+    off.reset(seed=0)
+    on.reset(seed=0)
+    t_off.reset()
+    t_on.reset()
+    lower = 0
+    for _ in range(3000):
+        o1, _r1, term1, trunc1, _i1 = off.step(t_off.act())
+        o2, _r2, term2, trunc2, _i2 = on.step(t_on.act())
+        for k in o1:
+            if k != "ego":
+                assert np.array_equal(o1[k], o2[k]), k
+        assert o2["ego"][-2] <= o1["ego"][-2] + 1e-6      # 앞당긴 lim(정규화) ≤ 지금 lim
+        lower += int(o2["ego"][-2] < o1["ego"][-2] - 1e-6)
+        if term1 or trunc1 or term2 or trunc2:
+            break
+    off.close()
+    on.close()
+    assert lower > 0                                      # 내려감 앞에서 실제로 미리 낮아졌다

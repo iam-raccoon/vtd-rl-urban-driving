@@ -3,6 +3,7 @@
 2부에서 영상 인코더로 갈아 끼울 수 있게 관측 생성은 이 모듈 하나에 모은다.
 물체는 (개수 고정 + 마스크)로 내보내고, DeepSets 합치기는 정책이 한다.
 """
+import bisect
 import math
 from dataclasses import dataclass
 
@@ -31,6 +32,12 @@ class ObsConfig:
     obj_x: float = 80.0              # 물체 전후 정규화[m] — World.object_range(9910 수평 범위)와 맞춘다
     obj_y: float = 20.0              # 물체 좌우 정규화[m]
     obj_size: float = 12.0           # 물체 치수 정규화[m]
+    # M7h — 앞당긴 제한속도. True 면 `ego` 묶음의 lim·v−lim 에, 앞에 낮은 제한속도가 있을 때 거기까지
+    # lim_decel 로 줄이는 곡선을 따라 미리 낮아진 값을 쓴다(관측 차원은 그대로). 기본 False 면 예전과 같다.
+    lim_anticipate: bool = False
+    lim_decel: float = 1.5           # [m/s²]
+    lim_margin: float = 5.0          # [m] — 내려가는 자리보다 이만큼 앞에서 새 제한속도에 닿는다
+    lim_lookahead: float = 150.0     # [m]
 
 
 def observation_space(cfg: ObsConfig = ObsConfig()) -> spaces.Dict:
@@ -49,6 +56,17 @@ def observation_space(cfg: ObsConfig = ObsConfig()) -> spaces.Dict:
 
 def _clip(value, scale):
     return float(np.clip(value / scale, -1.0, 1.0))
+
+
+def anticipated_limit(idx, s: float, lim: float, cfg: ObsConfig) -> float:
+    """앞당긴 제한속도[m/s] — `s` 앞 lim_lookahead 안의 내려감마다 등감속 곡선 값을 구해 가장 작은 것(M7h)."""
+    i = bisect.bisect_right(idx.lim_drop_s, s)
+    for k in range(i, len(idx.lim_drop_s)):
+        ds = idx.lim_drop_s[k] - s
+        if ds > cfg.lim_lookahead:
+            break
+        lim = min(lim, math.sqrt(idx.lim_drop_v[k] ** 2 + 2.0 * cfg.lim_decel * max(ds - cfg.lim_margin, 0.0)))
+    return lim
 
 
 def _turn_onehot(turn):
@@ -81,6 +99,8 @@ def build_observation(world, state, info, prev_action, cfg: ObsConfig = ObsConfi
     index = info.index if info is not None else 0
     plan = idx.plan_at(index)
     lim = plan.get("lim") or 0.0
+    if cfg.lim_anticipate and lim > 0.0:
+        lim = anticipated_limit(idx, s, lim, cfg)
     yaw_rate = ego.v * math.tan(ego.steer) / world.cfg.dynamics.wheelbase
 
     ego_vec = [_clip(ego.v, cfg.v_max), float(np.clip(prev_action[0], -1.0, 1.0)),
