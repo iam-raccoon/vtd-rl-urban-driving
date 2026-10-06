@@ -539,3 +539,21 @@ def test_block_gap_은_사람과_움직이는_물체를_뺀다(monkeypatch):
         monkeypatch.setattr(env.state, "objects", [obj])
         assert env._block_gap() is None
     env.close()
+
+
+def test_block_profile_을_켜면_멈춘_차_뒤에서_block_항이_깎인다():
+    """정지 차량 판을 천천히 달려 차 앞 15 m 안에 들어가면 `block` 항이 생기고, 끄면 키가 없다(M7g 리뷰)."""
+    def run(cfg):
+        env = VtdDriveEnv([rammer_board()], EnvConfig(reward=cfg))
+        env.reset(seed=0)
+        vals = []
+        for _ in range(400):
+            _o, _r, term, trunc, info = env.step({"control": np.array([0.0, 0.3], dtype=np.float32), "turn": 0})
+            vals.append(info["reward_terms"].get("block"))
+            if term or trunc:
+                break
+        env.close()
+        return vals
+    on = run(RewardConfig(block_profile=0.5))
+    assert set(on) == {-0.5, 0.0}
+    assert all(v is None for v in run(RewardConfig()))
