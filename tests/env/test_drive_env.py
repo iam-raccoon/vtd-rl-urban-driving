@@ -581,6 +581,13 @@ def test_ovl_gap_은_겹친_폭에_가까움_가중을_곱한다(monkeypatch):
     assert env._ovl_gap() is None
     monkeypatch.setattr(env.state, "objects", [put(-5.0, -1.0)])              # 뒤
     assert env._ovl_gap() is None
+    monkeypatch.setattr(env.state, "objects", [put(10.0, 0.0, length=0.5, width=0.5, height=1.7)])  # 사람 크기
+    assert env._ovl_gap() is None
+    a, b = put(20.0, -1.0), put(12.0, -1.6)                                    # 둘 중 큰 값
+    va = (lim - 1.0) * (1.0 - gap_of(20.0) / 30.0)
+    vb = (lim - 1.6) * (1.0 - gap_of(12.0) / 30.0)
+    monkeypatch.setattr(env.state, "objects", [a, b])
+    assert env._ovl_gap() == pytest.approx(max(va, vb))
     env.close()
 
 
