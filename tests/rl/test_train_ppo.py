@@ -530,6 +530,13 @@ def test_lim_anticipate_인자가_학습_환경_관측에_닿는다():
     assert cfg.obs.lim_anticipate is True
     off = module._build_parser().parse_args(["--out", "x"])
     assert module._build_env_cfg(off, module._build_reward_cfg(off)).obs.lim_anticipate is False
+    from vtd_rl.env.drive_env import EnvConfig
+    from vtd_rl.world.world import WorldConfig
+    r = module._build_reward_cfg(off)
+    assert module._build_env_cfg(off, r) == EnvConfig(reward=r)              # 끄면 예전 학습 환경과 같다
+    smoke = module._build_parser().parse_args(["--out", "x", "--smoke"])
+    rs_ = module._build_reward_cfg(smoke)
+    assert module._build_env_cfg(smoke, rs_) == EnvConfig(world=WorldConfig(time_limit_scale=0.1), reward=rs_)
 
 
 @pytest.mark.slow
