@@ -12,7 +12,7 @@ from vtd_rl.world.signals import SIGNAL_MODES
 CURRICULUM_KEYS = {"name", "signals", "boards", "stage"}
 
 #: 판 항목에서 허용하는 키. `jitter` 는 변종이 액터를 얼마나 흔들지다(`world/place.py`).
-BOARD_KEYS = {"name", "route", "lane", "actors", "jitter"}
+BOARD_KEYS = {"name", "route", "lane", "actors", "jitter", "slice"}
 
 #: 변종 이름에 붙는 꼬리. **이름이 달라야** 한다 — `VtdDriveEnv._worlds` 는 판을 **이름으로**
 #: 캐시하고(`env/drive_env.py:65,89-96`) `World` 는 액터를 생성 때 한 번만 읽으므로
@@ -98,6 +98,16 @@ def load_board(entry: dict, signals: str = "always_green", variant: int | None =
     if actors:
         # 경로 JSON 은 액터를 갖지 않는다(2026-09-30 확인). 그래도 있으면 덮지 않고 더한다.
         sc.actors = list(sc.actors) + actors
+    cut = entry.get("slice")
+    if cut is not None:
+        # M7l — 어려운 장면 바로 앞에서 출발하는 짧은 판. 액터는 전체 판에서 (흔든 뒤) 지은 세계 좌표 그대로
+        # 쓰고, 흔든 뒤 s 가 구간 안인 것만 남긴다. 구간 밖 액터는 자른 경로에서 만날 일이 없다.
+        if not (isinstance(cut, (list, tuple)) and len(cut) == 2 and float(cut[1]) - float(cut[0]) >= 1.0):
+            raise ValueError(f"판 항목 '{entry.get('name', '?')}' 의 slice 는 [s_from, s_to](s_to > s_from) 이어야 한다: {cut!r}")
+        s0, s1 = float(cut[0]), float(cut[1])
+        kept = [a for a, sp in zip(actors, specs) if s0 <= float(sp["s"]) <= s1]
+        board = slice_board(board, s0, s1, name, signals)
+        board.scenario.actors = kept
     return board
 
 

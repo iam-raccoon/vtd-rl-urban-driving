@@ -54,3 +54,43 @@ def test_차로변경_표식_보존과_자르기():
     assert red.signals == "always_red"
     with pytest.raises(ValueError):
         slice_board(b, 0.0, 250.0, "H_bad", signals="purple")
+
+
+def _g_entry(**kw):
+    import json
+    path = os.path.join(os.path.dirname(__file__), "..", "curricula", "stage3.json")
+    with open(path, encoding="utf-8") as f:
+        e = dict(json.load(f)["boards"][4])     # course_G
+    assert e["name"] == "course_G"
+    e.update(kw)
+    return e
+
+
+def test_slice_는_구간만_자르고_구간_안_액터만_남긴다():
+    full = load_board(_g_entry())
+    cut = load_board(_g_entry(name="course_G_s2665", slice=[2515.0, 2785.0]))
+    assert abs(cut.route.total - 270.0) < 5.0
+    assert len(cut.scenario.actors) == 1                       # 4 번째 정지차만
+    car = cut.scenario.actors[0]
+    full_car = [a for a in full.scenario.actors if a.id == car.id][0]
+    assert car.motion == full_car.motion                       # 세계 좌표 그대로
+    x0, y0, _h = full.route.point_at(2515.0)
+    assert abs(cut.scenario.ego_start[0] - x0) < 2.0 and abs(cut.scenario.ego_start[1] - y0) < 2.0
+
+
+def test_slice_변종은_흔든_뒤_구간_안_액터를_남긴다():
+    for v in range(4):
+        cut = load_board(_g_entry(name="course_G_s2665", slice=[2515.0, 2785.0]), variant=v)
+        assert cut.name == f"course_G_s2665@v{v}"
+        assert len(cut.scenario.actors) == 1
+
+
+def test_slice_가_없으면_예전과_같다():
+    a, b = load_board(_g_entry()), load_board(_g_entry())
+    assert a.route.total == b.route.total and len(a.scenario.actors) == len(b.scenario.actors) == 4
+
+
+@pytest.mark.parametrize("bad", [[2515.0], [2785.0, 2515.0], [2515.0, 2515.5], "x"])
+def test_잘못된_slice_는_거부한다(bad):
+    with pytest.raises(ValueError):
+        load_board(_g_entry(name="bad", slice=bad))
