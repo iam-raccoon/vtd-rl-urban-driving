@@ -159,6 +159,7 @@ ROS2 `setup.bash` 를 source 한 셸은 `PYTHONPATH` 에 `/opt/ros/humble/...` �
 - [docs/reports/m7h-lim-anticipate.md](docs/reports/m7h-lim-anticipate.md) — **앞당긴 제한속도 관측**(앞에 낮은 제한속도가 있으면 미리 낮아진 값): 학습 없이 켜기만 해도 보호구역 중대 0.69 → 0.09(−87%). 같은 그물에서 두 창 모두 +0.9 점으로 일관되지만 교체 문턱 3 점 미달 → 배포 묶음 그대로
 - [docs/reports/m7i-overlap-profile.md](docs/reports/m7i-overlap-profile.md) — 통로와 겹친 폭 벌(c=2)은 칸 평균 충돌을 줄인다(57.3 → 35.1, 완주 312.7 → 338.9). 고른 그물 +0.50 → 최고 그물 그대로. 점수는 큰 창 90 근처에서 정체
 - [docs/reports/m7j-combine.md](docs/reports/m7j-combine.md) — **배포 묶음 갱신**: M7f 시드 2 · 12.5 만 + 앞당긴 제한속도 관측(미리 정한 짝 비교 기준으로 새 창 v22000 +0.69, 완주 같음, 보호구역 중대 0.70 → 0.08). 머무는 벌·겹친 폭 벌·앞당김을 묶어 이어 돌려도 지금 최고를 넘는 체크포인트 없음
+- [docs/reports/m7k-obstacle-imitation.md](docs/reports/m7k-obstacle-imitation.md) — 장애물 앞 장면 DAgger 행(β 0.5)으로 작은 계수(0.02·0.05) 보조 모방을 섞자 **정책이 무너졌다**(완주 3/384, 정체 312). 고른 행의 46% 가 장애물 뒤에 서 있는 상태라 "멈춤" 을 배웠다. 최고 그물 그대로
 
 ### 여기까지 온 곳
 **PPO 는 M3 모방 학생을 한 번도 못 넘었다 — 학습의 어느 시점에서도.** 목표 판정은 M4a 부터 지금까지
