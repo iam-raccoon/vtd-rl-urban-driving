@@ -511,6 +511,18 @@ def test_obs_profile_인자가_RewardConfig에_반영되고_hparams_로_되살�
     assert (off.obs_profile, off.obs_decel, off.obs_buffer, off.obs_margin) == (0.0, 2.0, 3.0, 0.3)
 
 
+def test_block_profile_인자가_RewardConfig에_반영되고_hparams_로_되살아난다():
+    from vtd_rl.rl.reward_cfg import reward_config_from_hparams
+    module = _load_train_ppo_module()
+    a = module._build_parser().parse_args(["--out", "x", "--block-profile", "1.0", "--block-range", "20"])
+    cfg = module._build_reward_cfg(a)
+    assert (cfg.block_profile, cfg.block_range) == (1.0, 20.0)
+    back = reward_config_from_hparams(vars(a))
+    assert (back.block_profile, back.block_range) == (1.0, 20.0)
+    off = module._build_reward_cfg(module._build_parser().parse_args(["--out", "x"]))
+    assert (off.block_profile, off.block_range) == (0.0, 15.0)
+
+
 @pytest.mark.slow
 def test_comfort_on_intent가_승차감의_표본_잡음을_줄인다(tmp_path):
     """`--comfort-on-intent` 를 켜면 실행 행동이 아니라 정책의 의도(결정적 평균)의 변화로

@@ -531,3 +531,29 @@ def test_obs_profile_은_넘은_속도에_비례해_깎는다():
 def test_잘못된_obs_설정은_거부한다(kw):
     with pytest.raises(ValueError):
         RewardConfig(**kw)
+
+
+def test_block_profile_기본값은_꺼짐이고_항이_없다():
+    assert RewardConfig().block_profile == 0.0
+    sh = RewardShaper(h_board(), RewardConfig())
+    sh.reset()
+    zero = {"control": [0.0, 0.0], "turn": 0}
+    assert "block" not in sh.step([], 0.0, zero, zero, "running", block=5.0).terms
+
+
+@pytest.mark.parametrize("block, want", [(None, 0.0), (20.0, 0.0), (15.0, 0.0), (14.9, -0.5), (0.0, -0.5)])
+def test_block_profile_은_가까운_멈춘_장애물_뒤에서만_깎는다(block, want):
+    sh = RewardShaper(h_board(), RewardConfig(block_profile=0.5))
+    sh.reset()
+    zero = {"control": [0.0, 0.0], "turn": 0}
+    out = sh.step([], 0.0, zero, zero, "running", block=block)
+    assert out.terms["block"] == pytest.approx(want)
+    assert str(out.terms["block"]) != "-0.0"
+    assert out.total == pytest.approx(sum(out.terms.values()))
+
+
+@pytest.mark.parametrize("kw", [{"block_profile": -0.1}, {"block_profile": float("nan")},
+                                {"block_range": -1.0}, {"block_range": float("inf")}])
+def test_잘못된_block_설정은_거부한다(kw):
+    with pytest.raises(ValueError):
+        RewardConfig(**kw)

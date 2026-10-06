@@ -109,6 +109,10 @@ class RewardConfig:
     obs_decel: float = 2.0           # [m/s²]
     obs_buffer: float = 3.0          # [m] — 물체 이만큼 앞에 서는 곡선
     obs_margin: float = 0.3          # [m] — 통로 여유
+    # M7g — 장애물 뒤에 머무는 벌. 통로 안 block_range 앞에 멈춰 있는 장애물(사람·자전거 제외)이 있으면
+    # 걸음마다 block_profile 을 깎는다(항 `block`). 통로를 벗어나거나 지나가면 사라진다. 기본 0 이면 꺼짐.
+    block_profile: float = 0.0
+    block_range: float = 15.0        # [m]
 
     def __post_init__(self):
         pairs = []
@@ -148,6 +152,10 @@ class RewardConfig:
             v = getattr(self, name)
             if not math.isfinite(v) or v < 0.0:
                 raise ValueError(f"{name} 는 유한한 0 이상이어야 한다: {v}")
+        if not math.isfinite(self.block_profile) or self.block_profile < 0.0:
+            raise ValueError(f"block_profile 은 유한한 0 이상이어야 한다: {self.block_profile}")
+        if not math.isfinite(self.block_range) or self.block_range < 0.0:
+            raise ValueError(f"block_range 는 유한한 0 이상이어야 한다: {self.block_range}")
 
 
 @dataclass
@@ -230,7 +238,7 @@ class RewardShaper:
         self._prev_intent = None
 
     def step(self, hits, ds: float, action, prev_action, outcome: str, intent=None, red=None,
-             lane=None, lat=None, obs=None) -> RewardStep:
+             lane=None, lat=None, obs=None, block=None) -> RewardStep:
         cfg = self.cfg
         # 충돌 항목(⑪⑭)은 `collision` 항이 따로 −50 을 물리므로 위반 합계에서 뺀다(기존 규칙).
         # `charge` 가 감점까지 내므로, 충돌 히트를 **처음부터 갈라서** 두 번 부른다 —
@@ -281,4 +289,7 @@ class RewardShaper:
             terms["stall"] = cfg.stall if outcome == "stalled" else 0.0
         if cfg.obs_profile > 0.0:     # 끈 실행은 항 자체가 없다
             terms["obs"] = 0.0 - cfg.obs_profile * obs_excess(obs, cfg.obs_decel, cfg.obs_buffer)
+        if cfg.block_profile > 0.0:   # 끈 실행은 항 자체가 없다
+            near = block is not None and block < cfg.block_range
+            terms["block"] = 0.0 - cfg.block_profile if near else 0.0
         return RewardStep(sum(terms.values()), terms, collision, len(counted) + len(col_counted))

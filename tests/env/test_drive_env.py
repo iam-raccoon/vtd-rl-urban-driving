@@ -511,3 +511,31 @@ def test_obs_profile_을_켜면_정지차에_달려들_때_obs_항이_깎인다(
     on = run(RewardConfig(obs_profile=0.5))
     assert min(on) < 0.0
     assert all(v is None for v in run(RewardConfig()))
+
+
+def test_block_gap_은_멈춘_차량은_보고_움직이는_물체는_안_본다():
+    env = VtdDriveEnv([rammer_board()])
+    env.reset(seed=0)
+    env.step({"control": np.array([0.0, 0.0], dtype=np.float32), "turn": 0})
+    gap = env._block_gap()
+    assert gap is not None and abs(gap - env._obs_gap()[0]) < 1e-9     # 같은 통로·거리 계산
+    env.close()
+    empty = VtdDriveEnv([boards()[0]])
+    empty.reset(seed=0)
+    empty.step({"control": np.array([0.0, 0.0], dtype=np.float32), "turn": 0})
+    assert empty._block_gap() is None
+    empty.close()
+
+
+def test_block_gap_은_사람과_움직이는_물체를_뺀다(monkeypatch):
+    env = VtdDriveEnv([rammer_board()])
+    env.reset(seed=0)
+    env.step({"control": np.array([0.0, 0.0], dtype=np.float32), "turn": 0})
+    car = env.state.objects[0]
+    from dataclasses import replace
+    moving = replace(car, speed=3.0)
+    person = replace(car, length=0.5, width=0.5, height=1.7)
+    for obj in (moving, person):
+        monkeypatch.setattr(env.state, "objects", [obj])
+        assert env._block_gap() is None
+    env.close()

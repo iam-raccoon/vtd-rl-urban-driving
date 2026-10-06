@@ -30,6 +30,7 @@ from vtd_rl.world.world import World, WorldConfig
 RUNNING = "running"
 EGO_HALF_W = 0.943               # 내 차 반폭[m] — 채점기 run_logger.EGO_HALF_W 와 같다(M7d 장애물 통로)
 ROAD_SURFACE_H = 0.25            # 이보다 낮은 물체는 노면 물체 — vtd_io.classify_object 의 경계(M7d)
+BLOCK_STILL_V = 0.5              # 이보다 느린 물체를 '멈춘 장애물' 로 본다[m/s](M7g)
 
 
 @dataclass
@@ -149,8 +150,10 @@ class VtdDriveEnv(gym.Env):
                 if self.cfg.reward.lane_profile > 0.0 else None)       # [m·행] × 프레임 dt = [m·s]
         lat = self._lat_gap() if self.cfg.reward.lat_profile > 0.0 else None
         obs = self._obs_gap() if self.cfg.reward.obs_profile > 0.0 else None
+        block = self._block_gap() if self.cfg.reward.block_profile > 0.0 else None
         shaped = self._shaper.step(hits, max(0.0, self._info.s - s0), action, self._prev_action,
-                                   outcome, intent=self.intent, red=red, lane=lane, lat=lat, obs=obs)
+                                   outcome, intent=self.intent, red=red, lane=lane, lat=lat, obs=obs,
+                                   block=block)
         self._prev_action = {"control": np.asarray(action["control"], dtype=np.float32).copy(),
                              "turn": int(action["turn"])}
         # M7a — 정체 벌을 주면 정체는 실패로 끝난다(기본 0 이면 예전처럼 아래에서 잘리기만 한다).
@@ -217,6 +220,33 @@ class VtdDriveEnv(gym.Env):
             if best is None or gap < best[0]:
                 v_close = float(ego.v) - max(0.0, float(o.speed) * math.cos(o.heading - ego.heading))
                 best = (gap, v_close)
+        return best
+
+    def _block_gap(self):
+        """통로 안 가장 가까운 '멈춘 장애물'(속도 < 0.5 m/s, 사람·자전거 아님)까지 앞범퍼 거리[m], 없으면 None(M7g).
+
+        통로·거리 계산은 `_obs_gap` 과 같다. 사람·자전거는 `vtd_io.classify_object` 로 가른다 — 보행자 앞에서는
+        비키지 말고 기다려야 하므로 머무는 벌에서 뺀다.
+        """
+        if self._info is None:
+            return None
+        import vtd_io                                   # rule_stack 이 경로를 잡아 둔다
+        ego = self.world.ego
+        ch, sh = math.cos(-ego.heading), math.sin(-ego.heading)
+        margin = self.cfg.reward.obs_margin
+        best = None
+        for o in self.state.objects:
+            if o.height < ROAD_SURFACE_H or abs(float(o.speed)) >= BLOCK_STILL_V:
+                continue
+            if vtd_io.classify_object(o.length, o.width, o.height) == vtd_io.ObjectClass.VRU:
+                continue
+            dx, dy = o.x - ego.x, o.y - ego.y
+            fx, fy = dx * ch - dy * sh, dx * sh + dy * ch
+            if fx <= 0.0 or abs(fy) >= o.width / 2.0 + EGO_HALF_W + margin:
+                continue
+            gap = max(0.0, fx - rs.score_fma.FRONT - o.length / 2.0)
+            if best is None or gap < best:
+                best = gap
         return best
 
     def _frozen_step(self):
