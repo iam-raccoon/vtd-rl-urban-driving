@@ -3,7 +3,8 @@
 # 규칙 스택 vtd/load_scenario.py 가 VTD 화면을 xdotool 로 조작한다).
 #   사용: bash scripts/vtd_validate.sh <출력폴더> <plain|ev> [코스 글자들(기본 A B D E G H)]
 #   plain = HL_FMA_NEW_<코스>.xml(신호만, 단계 ② 에 해당), ev = HL_FMA_NEW_<코스>_EV.xml(내 차로 정지차 + 대향차)
-# 환경변수: CKPT(학생 그물), HLFMA(규칙 스택 작업본, 기본 ~/hlfma2026), VTD_ROOT(기본 ~/Hexagon/VTD.2025.2), DISPLAY(기본 :1)
+# 환경변수: CKPT(학생 그물), HLFMA(규칙 스택 작업본, 기본 ~/hlfma2026), VTD_ROOT(기본 ~/Hexagon/VTD.2025.2), DISPLAY(기본 :1),
+#           DRIVERS(기본 "teacher student"), STUDENT_ARGS(학생에게 더 줄 인자, 예: "--green-left-as-green --steer-comp 0.017")
 cd "$(dirname "$0")/.." || exit 1
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 DISPLAY=${DISPLAY:-:1} XAUTHORITY=${XAUTHORITY:-$HOME/.Xauthority}
 HLFMA=${HLFMA:-$HOME/hlfma2026}; VTD_ROOT=${VTD_ROOT:-$HOME/Hexagon/VTD.2025.2}
@@ -30,7 +31,7 @@ restart_vtd() {
 echo "=== VTD 검증 시작 $(date +%H:%M:%S) 종류=$KIND 코스=$COURSES ==="
 for c in $COURSES; do
   NAME=HL_FMA_NEW_$c; [ "$KIND" = ev ] && NAME=${NAME}_EV
-  for WHO in teacher student; do
+  for WHO in ${DRIVERS:-teacher student}; do
     R=$O/$NAME-$WHO
     if [ -f $R/result.json ]; then echo "$NAME $WHO 이미 있음 — 건너뜀"; continue; fi
     alive || restart_vtd || { echo "❌ VTD 를 못 띄웠다"; exit 1; }
@@ -42,7 +43,7 @@ for c in $COURSES; do
       [ $try = 2 ] && restart_vtd
     done
     [ $loaded = 1 ] || { echo "❌ $NAME 로드 실패 — 건너뜀"; continue; }
-    if [ $WHO = teacher ]; then A="--teacher"; else A="--ckpt $CK --lim-anticipate"; fi
+    if [ $WHO = teacher ]; then A="--teacher"; else A="--ckpt $CK --lim-anticipate ${STUDENT_ARGS:-}"; fi
     echo "▶ $NAME $WHO $(date +%H:%M:%S)"
     $PY scripts/drive_vtd.py --board course_$c --curriculum curricula/stage2.json $A --out $R > $R.log 2>&1 < /dev/null
     tail -1 $R.log

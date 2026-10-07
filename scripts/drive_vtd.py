@@ -27,6 +27,17 @@ from vtd_rl.env.observation import ObsConfig  # noqa: E402
 from vtd_rl.world.board import load_curriculum  # noqa: E402
 
 BRAKE_ACCEL = -4.0           # 판이 끝난 뒤 물고 있는 감속(규칙 스택 main.py 와 같다)
+WHEELBASE = 2.95             # 오프라인 세계 자전거 모형(world/dynamics.py)과 같다
+MAX_STEER = math.radians(35.0)
+
+
+def compensate_steer(steer: float, speed: float, k_us: float) -> float:
+    """언더스티어 보정 — VTD 차의 요레이트가 v·tan(δ)/(L + K·v²) 이면(실측 K≈0.017 s²/m) 보낼 조향을 키워
+    오프라인 모형의 요레이트 v·tan(δ)/L 이 나오게 한다. k_us=0 이면 그대로, ±35° 에서 자른다."""
+    if k_us <= 0.0:
+        return steer
+    out = math.atan(math.tan(steer) * (WHEELBASE + k_us * speed * speed) / WHEELBASE)
+    return max(-MAX_STEER, min(MAX_STEER, out))
 
 
 def _build_parser():
@@ -39,6 +50,8 @@ def _build_parser():
     ap.add_argument("--lim-anticipate", action="store_true", help="관측에 앞당긴 제한속도(배포 묶음은 켠다)")
     ap.add_argument("--green-left-as-green", action="store_true",
                     help="관측에서 VTD 의 '녹색 + 좌회전 화살표'(5)를 녹색(3)으로 읽는다(오프라인 세계는 5 를 내지 않는다)")
+    ap.add_argument("--steer-comp", type=float, default=0.0,
+                    help="언더스티어 보정 계수 K[s²/m] — 보낼 조향을 (L + K·v²)/L 배(탄젠트 기준)로 키운다. 0 이면 끔")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=9910)
     ap.add_argument("--out", required=True)
@@ -77,13 +90,13 @@ def main(argv=None):
     old_handlers = {sig: signal.signal(sig, _exit_on_signal) for sig in (signal.SIGTERM, signal.SIGHUP)}
     link = rs.VTDLink(a.host, a.port)
     who = "선생님" if a.teacher else (f"{os.path.basename(a.ckpt)} (앞당김 {'켬' if a.lim_anticipate else '끔'}, "
-                                     f"녹색+좌회전→녹색 {'켬' if a.green_left_as_green else '끔'})")
+                                     f"녹색+좌회전→녹색 {'켬' if a.green_left_as_green else '끔'}, 조향 보정 K={a.steer_comp})")
     t_prev = end_t = None
     t = 0.0
     frames, last_print, link_closed, start_mismatch, error = 0, 0.0, False, None, None
     min_scale = 1.0
     ctrl = open(os.path.join(a.out, "ctrl.csv"), "w", encoding="utf-8")
-    ctrl.write("t,x,y,heading,speed,steer,accel,turn\n")
+    ctrl.write("t,x,y,heading,speed,steer,accel,turn,policy_steer\n")
     try:
         link.connect()
         print(f"[drive_vtd] {a.host}:{a.port} 연결 | 판 {board.name} {board.route.total:.0f} m | {who}", flush=True)
@@ -108,8 +121,10 @@ def main(argv=None):
                 t += max(0.0, s.t - t_prev) * scale
             t_prev = s.t
             frames += 1
-            steer, accel, turn = driver.step(s, t)
-            ctrl.write(f"{t:.3f},{s.x:.3f},{s.y:.3f},{s.heading:.5f},{s.speed:.3f},{steer:.5f},{accel:.3f},{turn}\n")
+            policy_steer, accel, turn = driver.step(s, t)
+            steer = compensate_steer(policy_steer, s.speed, a.steer_comp)    # 주행기 안의 상태는 보정 전 조향을 쓴다
+            ctrl.write(f"{t:.3f},{s.x:.3f},{s.y:.3f},{s.heading:.5f},{s.speed:.3f},{steer:.5f},{accel:.3f},{turn},"
+                       f"{policy_steer:.5f}\n")
             if driver.done:
                 if end_t is None:
                     end_t = t
@@ -146,7 +161,8 @@ def _write_result(a, board, driver, frames, link_closed, start_mismatch, error, 
         result = driver.finish()
         result.update({"board": board.name, "curriculum": a.curriculum, "driver": "teacher" if a.teacher else a.ckpt,
                        "lim_anticipate": bool(a.lim_anticipate),
-                       "green_left_as_green": bool(a.green_left_as_green), "frames": frames, "link_closed": link_closed,
+                       "green_left_as_green": bool(a.green_left_as_green), "steer_comp": a.steer_comp,
+                       "frames": frames, "link_closed": link_closed,
                        "start_mismatch": start_mismatch, "error": error, "min_sim_scale": min_scale,
                        "wall_time": time.strftime("%Y-%m-%d %H:%M:%S")})
         result["summary"] = summarize(result)

@@ -202,7 +202,7 @@ def test_drive_vtd_는_9910_소켓으로_달리고_성적을_남긴다(tmp_path)
     assert res["summary"]["progress"] > 0.0              # 실제로 움직였다
     assert (out / "rows.csv").read_text(encoding="utf-8").count("\n") >= 15
     ctrl = (out / "ctrl.csv").read_text(encoding="utf-8").splitlines()
-    assert ctrl[0] == "t,x,y,heading,speed,steer,accel,turn" and len(ctrl) - 1 == res["frames"]
+    assert ctrl[0] == "t,x,y,heading,speed,steer,accel,turn,policy_steer" and len(ctrl) - 1 == res["frames"]
     fake.thread.join(timeout=5.0)
     assert fake.ctrls[-1][1] < 0.0 and fake.ctrls[-1][0] == 0.0   # 끊기 전 마지막 명령은 제동이다
 
@@ -246,3 +246,18 @@ def test_옆_차로에서_출발하면_경로_차로에_들어올_때까지_이�
     assert driver.merged_at == pytest.approx(1.0)
     driver.step(vtd_start, 1.05)                          # 이제 같은 자리는 도로 이탈이다
     assert driver.outcome == "offroad"
+
+
+def test_언더스티어_보정은_모형_요레이트를_되살리고_한계에서_자른다():
+    spec = importlib.util.spec_from_file_location("drive_vtd_under_test3", SCRIPT)
+    drive_vtd = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(drive_vtd)
+    import math
+    L, K = drive_vtd.WHEELBASE, 0.017
+    assert drive_vtd.compensate_steer(0.1, 10.0, 0.0) == 0.1                 # 끄면 그대로
+    for v, d in ((5.0, 0.05), (12.0, 0.02), (8.0, -0.1)):
+        sent = drive_vtd.compensate_steer(d, v, K)
+        # 보정한 조향을 언더스티어 차에 넣으면 오프라인 모형의 요레이트가 나온다
+        assert v * math.tan(sent) / (L + K * v * v) == pytest.approx(v * math.tan(d) / L, rel=1e-9)
+    assert drive_vtd.compensate_steer(0.5, 15.0, K) == pytest.approx(math.radians(35.0))
+    assert drive_vtd.compensate_steer(-0.5, 15.0, K) == pytest.approx(-math.radians(35.0))
