@@ -8,6 +8,9 @@ VTD 에서 다른 점은 입력이 어디서 오느냐뿐이다:
 - 실제 조향각은 모른다. 관측의 요레이트는 오프라인 세계와 같은 조향 속도 제한 모형(`dynamics.step`)으로 낸다.
 - 판단은 평균 0.1 초마다(오프라인과 같은 10 Hz, 고정 위상), 명령은 프레임마다 다시 보낸다.
 - 리스폰(순간이동)이 오면 진행 방향이 맞는 경로점 중 가장 가까운 곳에서 투영을 다시 시작한다.
+- VTD 는 자차를 우리 경로의 출발 차로가 아닌 옆 차로에 놓기도 한다(실측: 코스 A·B·D 모두 3.0~3.3 m 왼쪽,
+  시나리오 PathRef StartLane=1). 그래서 첫 투영은 출발점 근처에서 찾고, 처음 경로 차로 안에 들어올 때까지는
+  도로 이탈 판정을 미룬다. 오프라인 세계는 출발점 위에서 시작하므로 둘 다 결과를 바꾸지 않는다.
 - 종료는 오프라인 세계와 같은 규칙(완주·도로 이탈·시간초과·정체) + 심판이 낸 충돌이다.
 """
 from dataclasses import dataclass
@@ -93,6 +96,7 @@ class VtdDriver:
         self._t_prev = None
         self._t_next = None               # 다음 판단 시각 — 고정 위상(평균 10 Hz, 프레임율과 무관)
         self._best = None                 # (s, t) — 정체 판정
+        self.merged_at = None             # 처음 경로 차로 안에 들어온 시각 — 그 전에는 도로 이탈 판정을 미룬다
         self._collided = False            # 이번 판단 구간에 충돌 판정이 났다 — 구간 끝에서 끝낸다(환경과 같다)
         self._teacher_cmd = None
         self._cmd = (0.0, 0.0, rs.TS_OFF)
@@ -112,9 +116,10 @@ class VtdDriver:
             self.respawns += 1
             self._hint = self._relocate(state)    # 순간이동 — 창 안 추적이 아니라 경로 전체에서 다시 찾는다
             self.view.ego.steer = 0.0
-        p = self.board.route.project(state.x, state.y, hint=self._hint)
-        self._hint = p.index
         first = self._t_prev is None
+        # 첫 프레임은 출발점 근처에서 찾는다 — 경로가 뒤에서 출발점 곁을 다시 지나면 전역 최근접이 그쪽에 붙는다(코스 B)
+        p = self.board.route.project(state.x, state.y, hint=0 if first else self._hint)
+        self._hint = p.index
         dt = 0.0 if first else max(0.0, t - self._t_prev)
         self._t_prev = t
         self._advance_ego(state, dt)
@@ -166,6 +171,7 @@ class VtdDriver:
                             "sheet": [dict(s) for s in sheet.state],
                             "respawns": dict(self.referee.respawns),
                             "respawns_seen": self.respawns,
+                            "merged_at": self.merged_at,
                             "decisions": self.decisions,
                             "notes": list(self.referee.ctx.notes),
                             "rows_csv": self.csv_path}
@@ -227,7 +233,9 @@ class VtdDriver:
         if self.board.route.total - p.s <= cfg.goal_radius:
             return "goal"
         plan = self.board.lane_plan[p.index] or {}
-        if not (plan.get("j") or plan.get("jx")):
+        if self.merged_at is None and -_room(plan, "r", "pr") <= p.lateral <= _room(plan, "l", "pl"):
+            self.merged_at = t
+        if self.merged_at is not None and not (plan.get("j") or plan.get("jx")):
             left = _room(plan, "l", "pl") + cfg.offroad_margin
             right = _room(plan, "r", "pr") + cfg.offroad_margin
             if p.lateral > left or p.lateral < -right:

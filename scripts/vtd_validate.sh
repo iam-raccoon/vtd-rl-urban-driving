@@ -23,7 +23,7 @@ restart_vtd() {
   pkill -x moduleManager; pkill -9 -f "$VTD_ROOT/Runtime"; pkill -f startSlave.sh; sleep 4
   (cd "$VTD_ROOT" && setsid ./bin/vtdStart.sh </dev/null >/tmp/vtdauto.log 2>&1 &)
   sleep 85
-  for _ in 1 2 3; do alive && return 0; sleep 20; done
+  for _ in 1 2 3; do alive && { sleep 30; return 0; }; sleep 20; done   # 갓 띄운 VTD 의 첫 로드는 잘 실패한다 — 30 초 더 둔다
   return 1
 }
 
@@ -36,7 +36,8 @@ for c in $COURSES; do
     alive || restart_vtd || { echo "❌ VTD 를 못 띄웠다"; exit 1; }
     loaded=0
     for try in 1 2 3; do
-      if (cd "$HLFMA/vtd" && timeout 150 python3 load_scenario.py $NAME) >> $R.load.log 2>&1; then loaded=1; break; fi
+      # -u: 시간 제한에 걸려 죽어도 로더가 찍은 원인(Apply 위치·streaming)이 기록에 남는다
+      if (cd "$HLFMA/vtd" && timeout 240 python3 -u load_scenario.py $NAME) >> $R.load.log 2>&1; then loaded=1; break; fi
       echo "  $NAME 로드 실패(${try}차)"; tail -2 $R.load.log; sleep 30
       [ $try = 2 ] && restart_vtd
     done

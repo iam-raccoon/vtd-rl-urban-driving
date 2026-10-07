@@ -216,3 +216,31 @@ def test_drive_vtd_는_다른_시나리오가_올라와_있으면_달리지_않�
     res = json.loads((out / "result.json").read_text(encoding="utf-8"))
     assert res["start_mismatch"] is not None and res["start_mismatch"] > 10.0
     assert res["frames"] == 0 and res["decisions"] == 0      # 한 프레임도 몰지 않았다
+
+
+def stage2_board(name):
+    _, boards = load_curriculum("curricula/stage2.json")
+    return next(b for b in boards if b.name == name)
+
+
+def test_첫_투영은_출발점_근처에서_찾는다():
+    # VTD 실측(코스 B): 자차가 출발점 4 m 옆에 놓였고, 경로가 1747 m 지점에서 출발점 곁을 다시 지난다
+    board = stage2_board("course_B")
+    driver = VtdDriver(board, policy=random_policy(), obs_cfg=CFG.obs)
+    driver.step(rs.State(x=1015.677, y=280.246, heading=0.6661), 0.0)
+    assert driver.info.s < 10.0
+
+
+def test_옆_차로에서_출발하면_경로_차로에_들어올_때까지_이탈로_끝내지_않는다():
+    # VTD 실측(코스 D): 자차가 경로 출발점 3.3 m 왼쪽(왼쪽 여유 1.5 m)에 놓였다
+    board = stage2_board("course_D")
+    driver = VtdDriver(board, policy=random_policy(), obs_cfg=CFG.obs)
+    vtd_start = rs.State(x=1521.528, y=13.899, heading=1.7265)
+    for k in range(20):                                   # 1 초 동안 제자리
+        driver.step(vtd_start, k * 0.05)
+    assert not driver.done and driver.merged_at is None
+    x, y, h = board.start_pose
+    driver.step(rs.State(x=x, y=y, heading=h), 1.0)       # 경로 차로에 들어왔다
+    assert driver.merged_at == pytest.approx(1.0)
+    driver.step(vtd_start, 1.05)                          # 이제 같은 자리는 도로 이탈이다
+    assert driver.outcome == "offroad"
