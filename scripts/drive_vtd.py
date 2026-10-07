@@ -7,7 +7,8 @@
         --ckpt runs/omen/2026-10-06-m7f-s2/policy-125440.pt --lim-anticipate --out runs/omen/vtd/A-student
     python scripts/drive_vtd.py --board course_A --curriculum curricula/stage2.json --teacher --out runs/omen/vtd/A-teacher
 
-남는 것: `<out>/rows.csv`(채점기 행), `<out>/result.json`(성적·종료 사유·요약).
+남는 것: `<out>/rows.csv`(채점기 행), `<out>/ctrl.csv`(프레임마다 보낸 명령 — VTD 동역학 보정용),
+`<out>/result.json`(성적·종료 사유·요약).
 """
 import argparse
 import json
@@ -77,6 +78,8 @@ def main(argv=None):
     t = 0.0
     frames, last_print, link_closed, start_mismatch, error = 0, 0.0, False, None, None
     min_scale = 1.0
+    ctrl = open(os.path.join(a.out, "ctrl.csv"), "w", encoding="utf-8")
+    ctrl.write("t,x,y,heading,speed,steer,accel,turn\n")
     try:
         link.connect()
         print(f"[drive_vtd] {a.host}:{a.port} 연결 | 판 {board.name} {board.route.total:.0f} m | {who}", flush=True)
@@ -102,6 +105,7 @@ def main(argv=None):
             t_prev = s.t
             frames += 1
             steer, accel, turn = driver.step(s, t)
+            ctrl.write(f"{t:.3f},{s.x:.3f},{s.y:.3f},{s.heading:.5f},{s.speed:.3f},{steer:.5f},{accel:.3f},{turn}\n")
             if driver.done:
                 if end_t is None:
                     end_t = t
@@ -127,6 +131,7 @@ def main(argv=None):
         except (OSError, AttributeError):
             pass                          # 연결 전이거나 이미 끊겼다
         link.close()
+        ctrl.close()
         _write_result(a, board, driver, frames, link_closed, start_mismatch, error, min_scale)
         for sig, h in old_handlers.items():
             signal.signal(sig, h)

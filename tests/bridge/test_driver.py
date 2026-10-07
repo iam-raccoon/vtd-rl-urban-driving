@@ -201,6 +201,8 @@ def test_drive_vtd_는_9910_소켓으로_달리고_성적을_남긴다(tmp_path)
     assert res["frames"] >= 15 and len(fake.ctrls) >= 15
     assert res["summary"]["progress"] > 0.0              # 실제로 움직였다
     assert (out / "rows.csv").read_text(encoding="utf-8").count("\n") >= 15
+    ctrl = (out / "ctrl.csv").read_text(encoding="utf-8").splitlines()
+    assert ctrl[0] == "t,x,y,heading,speed,steer,accel,turn" and len(ctrl) - 1 == res["frames"]
     fake.thread.join(timeout=5.0)
     assert fake.ctrls[-1][1] < 0.0 and fake.ctrls[-1][0] == 0.0   # 끊기 전 마지막 명령은 제동이다
 
