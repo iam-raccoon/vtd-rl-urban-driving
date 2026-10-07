@@ -38,6 +38,10 @@ class ObsConfig:
     lim_decel: float = 1.5           # [m/s²]
     lim_margin: float = 5.0          # [m] — 내려가는 자리보다 이만큼 앞에서 새 제한속도에 닿는다
     lim_lookahead: float = 150.0     # [m]
+    # VTD 검증 — VTD 의 녹색은 대부분 '녹색 + 좌회전 화살표'(TL_GREEN_LEFT = 5) 인데 오프라인 세계는 녹색(3)만 낸다.
+    # True 면 관측의 신호 상태 5 를 3 으로 읽는다. 채점기(item_traffic_light)와 규칙 스택(drive.py)도 5 를 녹색으로 본다.
+    # 오프라인 세계는 5 를 내지 않으므로 오프라인 결과는 이 값과 무관하다.
+    tl_green_left_as_green: bool = False
 
 
 def observation_space(cfg: ObsConfig = ObsConfig()) -> spaces.Dict:
@@ -137,6 +141,8 @@ def build_observation(world, state, info, prev_action, cfg: ObsConfig = ObsConfi
 
     signal = [0.0] * TL_STATES
     tl_state = int(state.tl_state) if 0 <= int(state.tl_state) < TL_STATES else 0
+    if cfg.tl_green_left_as_green and tl_state == rs.TL_GREEN_LEFT:
+        tl_state = rs.TL_GREEN
     signal[tl_state if state.tl_id > 0 else 0] = 1.0
     signal += [_clip(idx.ahead(s, "signal"), cfg.dist_max),
                _clip(idx.ahead(s, "stopline"), cfg.dist_max),

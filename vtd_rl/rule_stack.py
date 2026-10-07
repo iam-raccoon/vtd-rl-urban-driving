@@ -17,7 +17,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "third_part
 _DIRS = [os.path.join(ROOT, d) for d in ("src", "eval", "vtd")]
 sys.path[:0] = [d for d in _DIRS if d not in sys.path]
 
-from vtd_io import (State, Obj, VTDLink, TL_UNSET, TL_RED, TL_YELLOW, TL_GREEN,  # noqa: E402
+from vtd_io import (State, Obj, VTDLink, TL_UNSET, TL_RED, TL_YELLOW, TL_GREEN, TL_GREEN_LEFT,  # noqa: E402
                     TS_OFF, TS_LEFT, TS_RIGHT)
 from scenario import Scenario, Actor  # noqa: E402
 from drive import DrivingStack, Command  # noqa: E402
@@ -28,7 +28,7 @@ import check_lanes  # noqa: E402
 import control  # noqa: E402
 
 __all__ = ["ROOT", "path", "commit", "map_db", "State", "Obj", "VTDLink", "TL_UNSET", "TL_RED",
-           "TL_YELLOW", "TL_GREEN", "TS_OFF", "TS_LEFT", "TS_RIGHT", "Scenario", "Actor",
+           "TL_YELLOW", "TL_GREEN", "TL_GREEN_LEFT", "TS_OFF", "TS_LEFT", "TS_RIGHT", "Scenario", "Actor",
            "DrivingStack", "Command", "RunLogger", "HEADER", "mock_vtd", "score_fma", "check_lanes",
            "control", "XODR", "load_map"]
 

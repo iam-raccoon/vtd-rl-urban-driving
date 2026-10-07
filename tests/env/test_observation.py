@@ -239,3 +239,17 @@ def test_lim_anticipate_를_끄면_관측이_예전과_같고_켜면_lim_이_같
     off.close()
     on.close()
     assert lower > 0                                      # 내려감 앞에서 실제로 미리 낮아졌다
+
+
+def test_녹색_좌회전은_설정을_켜면_녹색으로_읽는다():
+    # VTD 의 녹색은 대부분 '녹색 + 좌회전 화살표'(5) — 오프라인 세계는 내지 않는 상태다(VTD 검증 실측)
+    w = h_world()
+    state = w.reset()
+    state.tl_id, state.tl_state = 101, rs.TL_GREEN_LEFT
+    raw = build_observation(w, state, None, (0.0, 0.0, 0))
+    assert raw["signal"][rs.TL_GREEN_LEFT] == 1.0 and raw["signal"][rs.TL_GREEN] == 0.0
+    mapped = build_observation(w, state, None, (0.0, 0.0, 0), ObsConfig(tl_green_left_as_green=True))
+    assert mapped["signal"][rs.TL_GREEN] == 1.0 and mapped["signal"][rs.TL_GREEN_LEFT] == 0.0
+    state.tl_state = rs.TL_RED                       # 다른 상태는 그대로
+    assert build_observation(w, state, None, (0.0, 0.0, 0),
+                             ObsConfig(tl_green_left_as_green=True))["signal"][rs.TL_RED] == 1.0

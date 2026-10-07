@@ -37,6 +37,8 @@ def _build_parser():
     who.add_argument("--ckpt", help="학생 정책 체크포인트(.pt)")
     who.add_argument("--teacher", action="store_true", help="규칙 스택 선생님으로 달린다")
     ap.add_argument("--lim-anticipate", action="store_true", help="관측에 앞당긴 제한속도(배포 묶음은 켠다)")
+    ap.add_argument("--green-left-as-green", action="store_true",
+                    help="관측에서 VTD 의 '녹색 + 좌회전 화살표'(5)를 녹색(3)으로 읽는다(오프라인 세계는 5 를 내지 않는다)")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=9910)
     ap.add_argument("--out", required=True)
@@ -69,11 +71,13 @@ def main(argv=None):
         from vtd_rl.policy.net import DrivePolicy
         policy = DrivePolicy.load(a.ckpt)
     os.makedirs(a.out, exist_ok=True)
-    driver = VtdDriver(board, policy=policy, teacher=a.teacher, obs_cfg=ObsConfig(lim_anticipate=a.lim_anticipate),
+    driver = VtdDriver(board, policy=policy, teacher=a.teacher, obs_cfg=ObsConfig(lim_anticipate=a.lim_anticipate,
+                                                                              tl_green_left_as_green=a.green_left_as_green),
                        csv_path=os.path.join(a.out, "rows.csv"))
     old_handlers = {sig: signal.signal(sig, _exit_on_signal) for sig in (signal.SIGTERM, signal.SIGHUP)}
     link = rs.VTDLink(a.host, a.port)
-    who = "선생님" if a.teacher else f"{os.path.basename(a.ckpt)} (앞당김 {'켬' if a.lim_anticipate else '끔'})"
+    who = "선생님" if a.teacher else (f"{os.path.basename(a.ckpt)} (앞당김 {'켬' if a.lim_anticipate else '끔'}, "
+                                     f"녹색+좌회전→녹색 {'켬' if a.green_left_as_green else '끔'})")
     t_prev = end_t = None
     t = 0.0
     frames, last_print, link_closed, start_mismatch, error = 0, 0.0, False, None, None
@@ -141,7 +145,8 @@ def _write_result(a, board, driver, frames, link_closed, start_mismatch, error, 
     try:
         result = driver.finish()
         result.update({"board": board.name, "curriculum": a.curriculum, "driver": "teacher" if a.teacher else a.ckpt,
-                       "lim_anticipate": bool(a.lim_anticipate), "frames": frames, "link_closed": link_closed,
+                       "lim_anticipate": bool(a.lim_anticipate),
+                       "green_left_as_green": bool(a.green_left_as_green), "frames": frames, "link_closed": link_closed,
                        "start_mismatch": start_mismatch, "error": error, "min_sim_scale": min_scale,
                        "wall_time": time.strftime("%Y-%m-%d %H:%M:%S")})
         result["summary"] = summarize(result)
