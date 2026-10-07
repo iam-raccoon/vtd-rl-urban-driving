@@ -1,3 +1,3 @@
 [submodule "third_party/rule_stack"]
 	path = third_party/rule_stack
-	url = https://github.com/iamracco0n/HL-FMA2026_Simulation.git
+	url = https://github.com/iam-raccoon/HL-FMA2026_Simulation.git

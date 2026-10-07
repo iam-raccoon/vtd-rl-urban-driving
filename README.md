@@ -8,7 +8,7 @@ Hexagon VTD 2025.2 의 도심 지도(LivingLab)에서 도로교통법을 지키�
 > 학생은 2/6 이다. 오프라인 세계에 접지 한계·언더스티어·일부 신호 상태가 없어서다([VTD 에서 달려 보기](#vtd-에서-달려-보기)).
 
 - 설계: [docs/superpowers/specs/2026-09-15-vtd-rl-urban-driving-design.md](docs/superpowers/specs/2026-09-15-vtd-rl-urban-driving-design.md)
-- 규칙 스택 공개 참고본: [HL-FMA2026-VTD](https://github.com/iamracco0n/HL-FMA2026-VTD)
+- 규칙 스택 공개 참고본: [HL-FMA2026-VTD](https://github.com/iam-raccoon/HL-FMA2026-VTD)
 
 ## 결과 한눈에
 
@@ -153,7 +153,7 @@ OMEN 의 VTD 2025.2 에서 시나리오마다 한 판씩 달렸다. 숫자와 �
 주최측 자료(지도 xodr, VTD 시나리오, 교육 자료)는 이 레포에 넣지 않는다.
 
 ## 설치
-    git clone --recurse-submodules https://github.com/iamracco0n/vtd-rl-urban-driving.git
+    git clone --recurse-submodules https://github.com/iam-raccoon/vtd-rl-urban-driving.git
     cd vtd-rl-urban-driving
     python3 -m venv .venv
     .venv/bin/pip install -e . -r requirements-dev.txt
