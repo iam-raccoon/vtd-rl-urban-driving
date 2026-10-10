@@ -49,6 +49,7 @@ from vtd_rl.rl.diagnostics import (ActionBoxTracker, OutcomeCounter, ReturnTrack
 from vtd_rl.rl.ppo import PPOConfig, dagger_batches, update  # noqa: E402
 from vtd_rl.rl.vec_env import make_vec_env, vec_obs_to_arrays  # noqa: E402
 from vtd_rl.world.board import load_curriculum  # noqa: E402
+from vtd_rl.world.dynamics import DynamicsParams  # noqa: E402
 from vtd_rl.world.world import WorldConfig  # noqa: E402
 
 PUBLIC_KEYS = ("goal_rate", "mean_score", "mean_score_raw", "mean_reward")
@@ -335,6 +336,10 @@ def _build_parser() -> argparse.ArgumentParser:
                          " 이 값을 곱해 걸음마다 깎는다. 0 이면 꺼짐")
     ap.add_argument("--ovl-range", dest="ovl_range", type=float, default=default_reward_cfg.ovl_range,
                     help="겹친 폭 벌을 거는 거리[m]")
+    ap.add_argument("--understeer", type=float, default=0.0,
+                    help="세계 동역학 언더스티어 계수 K[s²/m] — VTD 실측 0.016. 0 이면 끔(예전과 같다)")
+    ap.add_argument("--lat-accel-max", type=float, default=0.0,
+                    help="세계 동역학 측가속 한계[m/s²] — 넘으면 덜 돌아 바깥으로 밀린다. 0 이면 끔")
     ap.add_argument("--lim-anticipate", action="store_true",
                     help="학습 환경 관측의 제한속도를 앞당긴 값으로(M7h). 앞에 낮은 제한속도가 있으면"
                          " 거기까지 줄이는 곡선을 따라 미리 낮아진 값을 준다. 관측 차원은 그대로")
@@ -399,9 +404,11 @@ def _build_reward_cfg(a) -> RewardConfig:
 def _build_env_cfg(a, reward_cfg: RewardConfig) -> EnvConfig:
     """학습 환경 설정 — 보상 설정과 관측 설정(`--lim-anticipate`)을 묶는다. `--smoke` 면 시간 제한을 줄인다."""
     obs = ObsConfig(lim_anticipate=bool(getattr(a, "lim_anticipate", False)))
+    dyn = DynamicsParams(understeer=float(getattr(a, "understeer", 0.0) or 0.0),
+                         lat_accel_max=float(getattr(a, "lat_accel_max", 0.0) or 0.0))
     if a.smoke:
-        return EnvConfig(world=WorldConfig(time_limit_scale=0.1), reward=reward_cfg, obs=obs)
-    return EnvConfig(reward=reward_cfg, obs=obs)
+        return EnvConfig(world=WorldConfig(time_limit_scale=0.1, dynamics=dyn), reward=reward_cfg, obs=obs)
+    return EnvConfig(world=WorldConfig(dynamics=dyn), reward=reward_cfg, obs=obs)
 
 
 def _build_optimizer(net, cfg: PPOConfig) -> torch.optim.Optimizer:

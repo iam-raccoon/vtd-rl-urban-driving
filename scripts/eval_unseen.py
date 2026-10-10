@@ -35,6 +35,8 @@ REPO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, REPO)
 from vtd_rl import rule_stack as rs  # noqa: E402
 from vtd_rl.env.drive_env import EnvConfig  # noqa: E402
+from vtd_rl.world.dynamics import DynamicsParams  # noqa: E402
+from vtd_rl.world.world import WorldConfig  # noqa: E402
 from vtd_rl.env.observation import ObsConfig  # noqa: E402
 from vtd_rl.policy import device as pick_device  # noqa: E402
 from vtd_rl.policy.evaluate import evaluate_policy  # noqa: E402
@@ -127,7 +129,9 @@ def report_lines(a, rows, window, dev) -> list:
            + ("  ⚠ `--include-seen` 으로 **일부러 겹치게** 쟀다 — 이 숫자는 선택 편향이"
               " 든 쪽이다." if a.include_seen else ""),
            f"- 평가 시드 {a.eval_seeds}개 · 결정적 행동",
-           *(["- 관측: 앞당긴 제한속도"] if getattr(a, "lim_anticipate", False) else []), "",
+           *(["- 관측: 앞당긴 제한속도"] if getattr(a, "lim_anticipate", False) else []),
+           *([f"- 동역학: 언더스티어 K={a.understeer} · 측가속 한계 {a.lat_accel_max} m/s²"]
+             if getattr(a, "understeer", 0.0) or getattr(a, "lat_accel_max", 0.0) else []), "",
            "| 단계 | 변종 | 판 수 | 판별 평가 | 완주율 | 점수 | 총걸음 |",
            "|---|---|---:|---:|---:|---:|---:|"]
     for name, row in rows:
@@ -180,6 +184,8 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="아무것도 안 돌리고 무엇을 어느 변종으로 잴지만 찍는다")
     ap.add_argument("--lim-anticipate", action="store_true",
                     help="평가 환경 관측의 제한속도를 앞당긴 값으로(M7h) — 그렇게 학습한 그물을 잴 때 켠다")
+    ap.add_argument("--understeer", type=float, default=0.0, help="세계 동역학 언더스티어 K[s²/m](train_ppo 와 같은 뜻)")
+    ap.add_argument("--lat-accel-max", type=float, default=0.0, help="세계 동역학 측가속 한계[m/s²](train_ppo 와 같은 뜻)")
     return ap
 
 
@@ -225,7 +231,11 @@ def main():
     net = DrivePolicy.load(a.ckpt, device=dev)
     net.clamp_log_std()          # 옛 체크포인트의 log_std 가 지금 범위 밖일 수 있다
 
-    config = EnvConfig(obs=ObsConfig(lim_anticipate=True)) if a.lim_anticipate else None
+    config = None
+    if a.lim_anticipate or a.understeer or a.lat_accel_max:
+        config = EnvConfig(obs=ObsConfig(lim_anticipate=bool(a.lim_anticipate)),
+                           world=WorldConfig(dynamics=DynamicsParams(understeer=a.understeer,
+                                                                     lat_accel_max=a.lat_accel_max)))
     t0, rows = time.perf_counter(), []
     for name in a.stage:
         boards, varied = stage_boards(name, a.variants, a.variant_offset)

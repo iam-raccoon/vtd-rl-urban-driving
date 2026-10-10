@@ -1193,3 +1193,17 @@ def test_train_variant_pool_이_벡터_환경까지_닿는다(tmp_path, monkeypa
     with open(tmp_path / "run" / "log.jsonl", encoding="utf-8") as f:
         rows = [json.loads(line) for line in f if line.strip()]
     assert rows[0]["hparams"]["train_variant_pool"] == 8
+
+
+def test_동역학_인자는_학습_환경_세계에_실린다():
+    import importlib.util, os
+    spec = importlib.util.spec_from_file_location(
+        "train_ppo_dyn", os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "train_ppo.py"))
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    from vtd_rl.env.reward import RewardConfig
+    a = m._build_parser().parse_args(["--out", "x", "--understeer", "0.016", "--lat-accel-max", "6"])
+    cfg = m._build_env_cfg(a, RewardConfig())
+    assert cfg.world.dynamics.understeer == 0.016 and cfg.world.dynamics.lat_accel_max == 6.0
+    b = m._build_parser().parse_args(["--out", "x"])
+    d = m._build_env_cfg(b, RewardConfig()).world.dynamics
+    assert d.understeer == 0.0 and d.lat_accel_max == 0.0
