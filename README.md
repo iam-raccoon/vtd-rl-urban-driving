@@ -3,9 +3,14 @@
 Hexagon VTD 2025.2 의 도심 지도(LivingLab)에서 도로교통법을 지키며 달리는 **end-to-end 강화학습 운전 정책**을 만든 개인 프로젝트다.
 2026 HL-FMA 대회에서 완주한 규칙 기반 주행 스택을 선생님으로 두고, 모방학습(DAgger)으로 시작해 PPO 로 다듬었다.
 
-> **상태: 마무리(2026-10-07).** 학습과 평가는 VTD 가 아니라 **이 레포의 오프라인 세계**에서 했다([어디서 학습했나](#어디서-학습했나--오프라인-세계-vtd-아님)).
+> **상태: 마무리(2026-10-10, M8 까지).** 학습과 평가는 VTD 가 아니라 **이 레포의 오프라인 세계**에서 했다([어디서 학습했나](#어디서-학습했나--오프라인-세계-vtd-아님)).
 > 오프라인 시험 창에서 학생은 선생님에 2.3 점 못 미친다. **실제 VTD 에서는 처음에 선생님만 그대로 옮겨졌다**(신호만 코스 6/6, 학생 2/6).
 > 오프라인 세계에 VTD 동역학(언더스티어·접지 한계)을 넣고 다시 학습하자 **학생도 VTD 신호 코스 5/6 을 완주**했다(M8, [VTD 에서 달려 보기](#vtd-에서-달려-보기)).
+
+![고치기 전 학생과 다시 학습한 학생 — 실제 VTD 화면](docs/media/vtd_before_after.gif)
+
+*실제 VTD 화면, 코스 A 교차로(반지름 7 m 우회전). 왼쪽은 오프라인 세계에서만 학습한 학생으로, 빠르게 들어가 길 밖으로 밀린다.
+오른쪽은 오프라인 세계에 VTD 차 물리를 넣고 다시 학습한 학생(M8)으로, 속도를 줄이고 차로 안에서 돈다.*
 
 - 설계: [docs/superpowers/specs/2026-09-15-vtd-rl-urban-driving-design.md](docs/superpowers/specs/2026-09-15-vtd-rl-urban-driving-design.md)
 - 규칙 스택 공개 참고본: [HL-FMA2026-VTD](https://github.com/iam-raccoon/HL-FMA2026-VTD)
@@ -99,6 +104,11 @@ OMEN 의 VTD 2025.2 에서 시나리오마다 한 판씩 달렸다. 숫자와 �
 | 참고: 같은 신호만 코스를 오프라인에서(× 시드 3) — 선생님 | 18/18 · 99.53 | - |
 | 참고: 같은 신호만 코스를 오프라인에서(× 시드 3) — 학생 | 18/18 · 98.83 | - |
 
+<p>
+<img src="docs/media/chart_vtd_completion.png" width="49%" alt="VTD 신호 코스 완주 수">
+<img src="docs/media/chart_junction_speed.png" width="49%" alt="급커브 교차로 최고 속도">
+</p>
+
 - **선생님은 VTD 로 그대로 옮겨진다.** 지도·9910 입력·심판이 VTD 와 맞는다는 뜻이다.
 - **학생은 옮겨지지 않는다.** 원인은 셋이다.
   1. 오프라인 자전거 모형에 접지 한계가 없다. 학생이 반지름 7 m 교차로를 40 km/h 남짓으로 돈다(측가속 1.7~1.9 g, 선생님은 20~23 km/h).
@@ -164,16 +174,16 @@ OMEN 의 VTD 2025.2 에서 시나리오마다 한 판씩 달렸다. 숫자와 �
     .venv/bin/pip install -e . -r requirements-dev.txt
 
 ## 테스트
-테스트는 1175 개다. 한 번에 다 돌 수도 있지만(`env -u PYTHONPATH .venv/bin/pytest`, 조각 시간 합으로 25 분 남짓), 학습
+테스트는 1179 개다. 한 번에 다 돌 수도 있지만(`env -u PYTHONPATH .venv/bin/pytest`, 조각 시간 합으로 25 분 남짓), 학습
 테스트가 길어서 **세 조각**으로 나눠 돌리는 것을 권한다 — 한 번에 돌리면 도구·CI 의 실행 시간
 상한에 걸린다.
 
-    env -u PYTHONPATH .venv/bin/python -m pytest -q -m "not slow"                 # 1121개, 약 4분
-    env -u PYTHONPATH .venv/bin/python -m pytest tests/rl/ -q                     # 201개, 약 15분
+    env -u PYTHONPATH .venv/bin/python -m pytest -q -m "not slow"                 # 1125개, 약 4분
+    env -u PYTHONPATH .venv/bin/python -m pytest tests/rl/ -q                     # 202개, 약 15분
     env -u PYTHONPATH .venv/bin/python -m pytest -q -m slow --ignore=tests/rl     # 30개, 약 7분
 
-세 조각이 1175 개를 **덮지만 나누지는 않는다**: 첫 조각의 `-m "not slow"` 가 `tests/rl` 의 빠른 테스트
-177 개까지 가져가서 둘째 조각과 겹친다(그 177 개는 두 번 돈다 — 빨라서 그냥 둔다). 합이 1352 인 것은
+세 조각이 1179 개를 **덮지만 나누지는 않는다**: 첫 조각의 `-m "not slow"` 가 `tests/rl` 의 빠른 테스트
+178 개까지 가져가서 둘째 조각과 겹친다(그 178 개는 두 번 돈다 — 빨라서 그냥 둔다). 합이 1357 인 것은
 그래서다. 시간은 2026-10-07 lab-main 실측이다(다른 일과 CPU 를 나눠 쓴 채라 조금 길게 나왔을 수 있다).
 
 **⚠ 둘째 조각(`tests/rl`)이 약 880 초로 도구 상한(600 초)을 넘는다** — 이 조각은 백그라운드로
